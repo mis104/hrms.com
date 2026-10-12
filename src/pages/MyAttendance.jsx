@@ -23,37 +23,10 @@ import {
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import useAuthStore from "../store/authStore";
+import { supabase } from "../services/supabaseClient";
 
-const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
-const OUTSTATION_SPREADSHEET_ID = "1WTT8ZQhtf1yeSChNn2uJeW5Tz2TvYjQLrxhTx5l4Fgw";
-const MASTER_SHEET_NAME = "Master";
 const OUTSTATION_ATTENDANCE_CACHE_PREFIX = "my_outstation_attendance_cache_v1";
 const OUTSTATION_ATTENDANCE_CACHE_TTL_MS = 10 * 60 * 1000;
-
-const parseGoogleSheetTable = (text, sheetLabel = "sheet") => {
-  const jsonStart = text.indexOf("{");
-  const jsonEnd = text.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
-    throw new Error(`Invalid ${sheetLabel} response`);
-  }
-  const payload = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-  if (payload.status && payload.status !== "ok") {
-    throw new Error(payload.errors?.[0]?.detailed_message || `Failed to read ${sheetLabel}`);
-  }
-  return (payload.table?.rows || []).map((row) =>
-    (row.c || []).map((cell) => {
-      if (!cell) return "";
-      return cell.f ?? cell.v ?? "";
-    })
-  );
-};
-
-const fetchSheetRows = async (sheetName) => {
-  const url = `https://docs.google.com/spreadsheets/d/${OUTSTATION_SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&cb=${Date.now()}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${sheetName} sheet HTTP error! status: ${response.status}`);
-  return parseGoogleSheetTable(await response.text(), sheetName);
-};
 
 const MONTHS = [
   "January",
@@ -294,23 +267,46 @@ const MyAttendance = () => {
     setError(null);
 
     try {
-      if (!OUTSTATION_SCRIPT_URL) throw new Error("VITE_OUTSTATION_SHEET_URL missing hai");
+      let rawAttendance = [];
 
-      const attendancePromise = fetch(`${OUTSTATION_SCRIPT_URL}?action=getAllData&realtime=1&_=${Date.now()}`, {
-        cache: "no-store",
-      }).then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        const data = await res.json();
-        if (data.status !== "success") throw new Error(data.message || "Outstation attendance fetch failed");
-        return data;
-      });
+      let attQuery = supabase
+        .from("attendance")
+        .select("person_name, date_and_time, timestampe, status, map_link, address")
+        .order("id", { ascending: false });
 
-      const masterPromise = fetchSheetRows(MASTER_SHEET_NAME).catch(() => []);
+      if (currentUserName) {
+        attQuery = attQuery.ilike("person_name", `%${currentUserName}%`);
+      } else {
+        attQuery = attQuery.limit(1000);
+      }
 
-      const [result, masterRows] = await Promise.all([attendancePromise, masterPromise]);
-      setMasterData(masterRows);
+      const [supaAttRes, supaUsersRes] = await Promise.all([
+        attQuery,
+        supabase
+          .from("users")
+          .select("name, username, time_in, time_out, employee_type, category"),
+      ]);
 
-      const rawAttendance = Array.isArray(result.attendance) ? result.attendance : [];
+      if (!supaUsersRes.error && supaUsersRes.data) {
+        setMasterData(supaUsersRes.data);
+      }
+
+      if (!supaAttRes.error && supaAttRes.data && supaAttRes.data.length > 0) {
+        rawAttendance = supaAttRes.data.map((r) => {
+          const statusStr = (r.status || "").toString().trim().toUpperCase();
+          const dt = r.date_and_time || r.timestampe || "";
+          return {
+            personName: r.person_name || "",
+            dateTime: dt,
+            inDate: statusStr === "IN" ? dt : "",
+            outDate: statusStr === "OUT" ? dt : "",
+            status: statusStr,
+            mapLink: r.map_link || "",
+            address: r.address || "",
+          };
+        });
+      }
+
       const grouped = {};
 
       rawAttendance.forEach((entry) => {
@@ -1172,14 +1168,20 @@ const isHalfDayRecord = (record, masterData = []) => {
   let expectedOutMinutes = 18 * 60;
 
   if (masterData && Array.isArray(masterData) && masterData.length > 0) {
-    const matchedMaster = masterData.find(
-      (row) =>
-        normalize(row[0]) === normalize(record.employeeName) ||
-        normalize(row[1]) === normalize(record.employeeName)
-    );
+    const matchedMaster = masterData.find((item) => {
+      if (Array.isArray(item)) {
+        return (
+          normalize(item[0]) === normalize(record.employeeName) ||
+          normalize(item[1]) === normalize(record.employeeName)
+        );
+      }
+      return (
+        normalize(item.name) === normalize(record.employeeName) ||
+        normalize(item.username) === normalize(record.employeeName)
+      );
+    });
 
     if (matchedMaster) {
-      // Find time in/out columns (usually J and K i.e., index 9 and 10)
       const parseMasterTime = (val) => {
         if (!val) return null;
         const match = String(val).trim().match(/^(\d{1,2})[:.](\d{1,2})/);
@@ -1187,11 +1189,17 @@ const isHalfDayRecord = (record, masterData = []) => {
         return null;
       };
 
-      const mTimeIn = parseMasterTime(matchedMaster[9]) || parseMasterTime(matchedMaster[8]);
-      const mTimeOut = parseMasterTime(matchedMaster[10]) || parseMasterTime(matchedMaster[9]);
-      
-      if (mTimeIn !== null) expectedInMinutes = mTimeIn;
-      if (mTimeOut !== null) expectedOutMinutes = mTimeOut;
+      if (Array.isArray(matchedMaster)) {
+        const mTimeIn = parseMasterTime(matchedMaster[9]) || parseMasterTime(matchedMaster[8]);
+        const mTimeOut = parseMasterTime(matchedMaster[10]) || parseMasterTime(matchedMaster[9]);
+        if (mTimeIn !== null) expectedInMinutes = mTimeIn;
+        if (mTimeOut !== null) expectedOutMinutes = mTimeOut;
+      } else {
+        const mTimeIn = parseMasterTime(matchedMaster.time_in);
+        const mTimeOut = parseMasterTime(matchedMaster.time_out);
+        if (mTimeIn !== null) expectedInMinutes = mTimeIn;
+        if (mTimeOut !== null) expectedOutMinutes = mTimeOut;
+      }
     }
   }
 

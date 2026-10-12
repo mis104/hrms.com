@@ -1,227 +1,175 @@
 import { useState, useEffect } from 'react';
+import { supabase } from '../services/supabaseClient';
 
-const PENDING_COUNTS_CACHE_KEY = "hrms_pending_counts_cache_v1";
+const PENDING_COUNTS_CACHE_KEY = "hrms_pending_counts_supabase_cache_v2";
+const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes cache
 
 const getCachedCounts = () => {
-    try {
-        const cached = localStorage.getItem(PENDING_COUNTS_CACHE_KEY);
-        return cached ? JSON.parse(cached) : null;
-    } catch {
-        return null;
+  try {
+    const cached = localStorage.getItem(PENDING_COUNTS_CACHE_KEY);
+    if (!cached) return null;
+    const { data, timestamp } = JSON.parse(cached);
+    if (Date.now() - timestamp < CACHE_TTL_MS) {
+      return data;
     }
-};
-
-const safeFetchJson = async (url) => {
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (!res.ok) return null;
-        const text = await res.text();
-        const jsonStart = text.indexOf('{');
-        const jsonEnd = text.lastIndexOf('}');
-        if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-            return JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-        }
-        const arrStart = text.indexOf('[');
-        const arrEnd = text.lastIndexOf(']');
-        if (arrStart !== -1 && arrEnd !== -1 && arrEnd > arrStart) {
-            return JSON.parse(text.slice(arrStart, arrEnd + 1));
-        }
-        return JSON.parse(text);
-    } catch {
-        return null;
-    }
+    return null;
+  } catch {
+    return null;
+  }
 };
 
 export const usePendingCounts = () => {
-    const [counts, setCounts] = useState(() => getCachedCounts() || {
-        onlinePostingCount: 0,
-        jobConsultancyCount: 0,
-        whatsappCount: 0,
-        verificationCount: 0,
-        interviewSelectionCount: 0,
-        joiningManagementCount: 0,
-        checkSalarySlipCount: 0,
-        joiningLetterCount: 0,
-        inductionTrainingCount: 0,
-        assetAssignmentCount: 0
-    });
+  const [counts, setCounts] = useState(() => getCachedCounts() || {
+    openIndentsCount: 0,
+    onlinePostingCount: 0,
+    jobConsultancyCount: 0,
+    candidateShortlistedCount: 0,
+    verificationCount: 0,
+    interviewSelectionCount: 0,
+    joiningManagementCount: 0,
+    checkSalarySlipCount: 0,
+    joiningLetterCount: 0,
+    inductionTrainingCount: 0,
+    assetAssignmentCount: 0,
+  });
 
-    const FETCH_URL = import.meta.env.VITE_GOOGLE_SHEET_URL;
-    const JOINING_SUBMIT_URL = "https://script.google.com/macros/s/AKfycbwhFgVoAB4S1cKrU0iDRtCH5B2K-ol2c0RmaaEWXGqv0bdMzs3cs3kPuqOfUAR3KHYZ7g/exec";
-    const FAST_STAGE_TTL_MS = 10 * 60 * 1000;
-    const JOINING_LETTER_DONE_KEY = "hrms_stage_done_joining_letter_v1";
-    const INDUCTION_FAST_PENDING_KEY = "hrms_stage_pending_induction_v1";
-    const INDUCTION_DONE_KEY = "hrms_stage_done_induction_v1";
-    const ASSET_FAST_PENDING_KEY = "hrms_stage_pending_asset_v1";
-    const ASSET_DONE_KEY = "hrms_stage_done_asset_v1";
+  useEffect(() => {
+    const fetchPendingCounts = async () => {
+      try {
+        const [
+          { data: fmsData },
+          { data: candData },
+          { data: joinData }
+        ] = await Promise.all([
+          supabase
+            .from('fms')
+            .select('position_status, stage1_planned, stage1_actual, stage2_planned, stage2_actual'),
+          supabase
+            .from('candidate_selection')
+            .select('stage1_planned, stage1_actual, stage1_status, stage2_planned, stage2_actual, stage3_planned, stage3_actual, stage4_planned, stage4_actual'),
+          supabase
+            .from('joining_fms')
+            .select('update_link, stage1_planned, stage1_actual, stage2_planned, stage2_actual, stage3_planned, stage3_actual, stage5_planned, stage5_actual')
+        ]);
 
-    const readFastStageRows = (key) => {
-        try {
-            const rows = JSON.parse(localStorage.getItem(key) || "[]");
-            const freshRows = Array.isArray(rows)
-                ? rows.filter((row) => Date.now() - Number(row._savedAt || 0) < FAST_STAGE_TTL_MS)
-                : [];
-            if (freshRows.length !== rows.length) localStorage.setItem(key, JSON.stringify(freshRows));
-            return freshRows;
-        } catch {
-            return [];
-        }
-    };
+        let openIndents = 0;
+        let onlinePosting = 0;
+        let jobConsultancy = 0;
 
-    useEffect(() => {
-        const fetchAllData = async () => {
-            try {
-                const cb = `&_=${Date.now()}`;
-                
-                const [fmsRes, candidateRes, joiningRes] = await Promise.all([
-                    safeFetchJson(`${FETCH_URL}?sheet=FMS&action=fetch${cb}`),
-                    safeFetchJson(`${FETCH_URL}?sheet=Canidate_Selection&action=fetch${cb}`),
-                    safeFetchJson(`${JOINING_SUBMIT_URL}?action=read&sheet=JOINING_FMS${cb}`)
-                ]);
+        (fmsData || []).forEach((r) => {
+          if ((r.position_status || '').toUpperCase() === 'OPEN') {
+            openIndents++;
+          }
+          const p1 = (r.stage1_planned || '').trim();
+          const a1 = (r.stage1_actual || '').trim();
+          if (p1 !== '' && a1 === '' && (r.position_status || '').toUpperCase() !== 'CLOSED') {
+            onlinePosting++;
+          }
 
-                let onlinePosting = 0, jobConsultancy = 0, whatsapp = 0;
-                let verification = 0, interviewSelection = 0;
-                let checkSalarySlip = 0, joiningLetter = 0, inductionTraining = 0, assetAssignment = 0;
-                let joiningManagement = 0;
+          const p2 = (r.stage2_planned || '').trim();
+          const a2 = (r.stage2_actual || '').trim();
+          if (p2 !== '' && a2 === '' && (r.position_status || '').toUpperCase() !== 'CLOSED') {
+            jobConsultancy++;
+          }
+        });
 
-                // 1. FMS Data
-                if (fmsRes && fmsRes.data && fmsRes.data.length > 9) {
-                    const dataRows = fmsRes.data.slice(9);
-                    dataRows.forEach(row => {
-                        if (!row) return;
-                        const p1 = row[17]?.toString().trim() || "";
-                        const a1 = row[18]?.toString().trim() || "";
-                        if (p1 !== "" && a1 === "") onlinePosting++;
+        let candidateShortlisted = 0;
+        let verification = 0;
+        let interviewSelection = 0;
+        let joiningManagement = 0;
 
-                        const p2 = row[23]?.toString().trim() || "";
-                        const a2 = row[24]?.toString().trim() || "";
-                        if (p2 !== "" && a2 === "") jobConsultancy++;
+        (candData || []).forEach((r) => {
+          const s1 = (r.stage1_status || '').toLowerCase().trim();
+          const p1 = (r.stage1_planned || '').trim();
+          const a1 = (r.stage1_actual || '').trim();
+          if (s1 === 'pending' || (p1 !== '' && a1 === '')) {
+            candidateShortlisted++;
+          }
 
-                        const p3 = row[30]?.toString().trim() || "";
-                        const a3 = row[31]?.toString().trim() || "";
-                        if (p3 !== "" && a3 === "") whatsapp++;
-                    });
-                }
+          const p2 = (r.stage2_planned || '').trim();
+          const a2 = (r.stage2_actual || '').trim();
+          if (p2 !== '' && a2 === '') {
+            verification++;
+          }
 
-                // Parse Function for Candidate and Joining
-                const parseData = (json) => {
-                    let allRows = [];
-                    if (Array.isArray(json)) allRows = json;
-                    else if (json && typeof json === 'object' && json.data && Array.isArray(json.data)) allRows = json.data;
-                    else return { rows: [] };
-                    
-                    const headerRowIndex = allRows.findIndex(row =>
-                        row && row.some(cell =>
-                            cell && (
-                                cell.toString().trim().toUpperCase() === "ID" ||
-                                cell.toString().trim().toLowerCase().includes("candidate enquiry")
-                            )
-                        )
-                    );
-                    if (headerRowIndex === -1) return { rows: allRows.slice(1) };
-                    return { rows: allRows.slice(headerRowIndex + 1) };
-                };
+          const p3 = (r.stage3_planned || '').trim();
+          const a3 = (r.stage3_actual || '').trim();
+          if (p3 !== '' && a3 === '') {
+            interviewSelection++;
+          }
+        });
 
-                const cRows = parseData(candidateRes).rows;
-                const jRows = parseData(joiningRes).rows;
-                const hasSheetValue = (value) => value !== null && value !== undefined && value.toString().trim() !== "";
-                const joiningLetterDoneIds = new Set(readFastStageRows(JOINING_LETTER_DONE_KEY).map((item) => item.indentNumber));
-                const inductionDoneIds = new Set(readFastStageRows(INDUCTION_DONE_KEY).map((item) => item.indentNumber));
-                const assetDoneIds = new Set(readFastStageRows(ASSET_DONE_KEY).map((item) => item.indentNumber));
-                const inductionSeenIds = new Set();
-                const assetSeenIds = new Set();
+        let checkSalarySlip = 0;
+        let joiningLetter = 0;
+        let inductionTraining = 0;
+        let assetAssignment = 0;
 
-                // 2. JOINING_FMS Data
-                if (jRows.length > 0) {
-                    jRows.forEach(row => {
-                        if (!row) return;
-                        
-                        const id = row[5]?.toString().trim() || "";
-                        const updateLink = row[8]?.toString().trim() || "";
-                        if (id && updateLink.toUpperCase() !== "DONE") joiningManagement++;
+        (joinData || []).forEach((r) => {
+          const isDone = (r.update_link || '').trim().toUpperCase() === 'DONE';
+          if (!isDone) {
+            joiningManagement++;
+          }
 
-                        // Check Salary Slip (38 vs 39)
-                        const am = row[38]?.toString().trim() || "";
-                        const an = row[39]?.toString().trim() || "";
-                        if (am !== "" && an === "") checkSalarySlip++;
+          const p1 = (r.stage1_planned || '').trim();
+          const a1 = (r.stage1_actual || '').trim();
+          if (p1 !== '' && a1 === '') {
+            checkSalarySlip++;
+          }
 
-                        // Joining Letter Release (42 vs 43)
-                        if (hasSheetValue(row[42]) && !hasSheetValue(row[43]) && !joiningLetterDoneIds.has(id)) joiningLetter++;
+          const p2 = (r.stage2_planned || '').trim();
+          const a2 = (r.stage2_actual || '').trim();
+          if (p2 !== '' && a2 === '') {
+            joiningLetter++;
+          }
 
-                        // Induction Training (47 vs 48)
-                        if (id && (hasSheetValue(row[47]) || hasSheetValue(row[48]))) inductionSeenIds.add(id);
-                        if (hasSheetValue(row[47]) && !hasSheetValue(row[48]) && !inductionDoneIds.has(id)) inductionTraining++;
+          const p3 = (r.stage3_planned || '').trim();
+          const a3 = (r.stage3_actual || '').trim();
+          if (p3 !== '' && a3 === '') {
+            inductionTraining++;
+          }
 
-                        // Asset Assignment (56 vs 57)
-                        if (id && (hasSheetValue(row[56]) || hasSheetValue(row[57]))) assetSeenIds.add(id);
-                        if (hasSheetValue(row[56]) && !hasSheetValue(row[57]) && !assetDoneIds.has(id)) assetAssignment++;
-                    });
-                }
+          const p5 = (r.stage5_planned || '').trim();
+          const a5 = (r.stage5_actual || '').trim();
+          if (p5 !== '' && a5 === '') {
+            assetAssignment++;
+          }
+        });
 
-                readFastStageRows(INDUCTION_FAST_PENDING_KEY).forEach((item) => {
-                    const id = item.indentNumber;
-                    if (id && !inductionSeenIds.has(id) && !inductionDoneIds.has(id)) inductionTraining++;
-                });
-
-                readFastStageRows(ASSET_FAST_PENDING_KEY).forEach((item) => {
-                    const id = item.indentNumber;
-                    if (id && !assetSeenIds.has(id) && !assetDoneIds.has(id)) assetAssignment++;
-                });
-
-                // 3. Candidate_Selection Data
-                if (cRows.length > 0) {
-                    cRows.forEach(row => {
-                        if (!row) return;
-                        
-                        // Verification After Interview (25 vs 26)
-                        const z = row[25]?.toString().trim() || "";
-                        const aa = row[26]?.toString().trim() || "";
-                        if (z !== "" && aa === "") verification++;
-
-                        // Interview Selection (29 vs 30)
-                        const ad = row[29]?.toString().trim() || "";
-                        const ae = row[30]?.toString().trim() || "";
-                        if (ad !== "" && ae === "") interviewSelection++;
-                    });
-                }
-
-                const newCounts = {
-                    onlinePostingCount: onlinePosting,
-                    jobConsultancyCount: jobConsultancy,
-                    whatsappCount: whatsapp,
-                    verificationCount: verification,
-                    interviewSelectionCount: interviewSelection,
-                    joiningManagementCount: joiningManagement,
-                    checkSalarySlipCount: checkSalarySlip,
-                    joiningLetterCount: joiningLetter,
-                    inductionTrainingCount: inductionTraining,
-                    assetAssignmentCount: assetAssignment
-                };
-
-                setCounts(newCounts);
-                try {
-                    localStorage.setItem(PENDING_COUNTS_CACHE_KEY, JSON.stringify(newCounts));
-                } catch {
-                    // Ignore quota
-                }
-
-            } catch (error) {
-                // Silently ignore network/parse errors without crashing UI
-            }
+        const newCounts = {
+          openIndentsCount: openIndents,
+          onlinePostingCount: onlinePosting,
+          jobConsultancyCount: jobConsultancy,
+          candidateShortlistedCount: candidateShortlisted,
+          verificationCount: verification,
+          interviewSelectionCount: interviewSelection,
+          joiningManagementCount: joiningManagement,
+          checkSalarySlipCount: checkSalarySlip,
+          joiningLetterCount: joiningLetter,
+          inductionTrainingCount: inductionTraining,
+          assetAssignmentCount: assetAssignment,
         };
 
-        fetchAllData();
+        setCounts(newCounts);
+        localStorage.setItem(
+          PENDING_COUNTS_CACHE_KEY,
+          JSON.stringify({ data: newCounts, timestamp: Date.now() })
+        );
+      } catch (err) {
+        console.warn("Error fetching pending counts from Supabase:", err);
+      }
+    };
 
-        fetchAllData();
-        
-        // Optional: setup a refresh interval or listen to a custom event
-        const handleRefresh = () => fetchAllData();
-        window.addEventListener('refresh-pending-counts', handleRefresh);
-        return () => window.removeEventListener('refresh-pending-counts', handleRefresh);
-    }, []);
+    fetchPendingCounts();
 
-    return counts;
+    const handleRefresh = () => fetchPendingCounts();
+    window.addEventListener('refresh-pending-counts', handleRefresh);
+    const interval = setInterval(fetchPendingCounts, 60000); // 1 minute auto refresh
+
+    return () => {
+      window.removeEventListener('refresh-pending-counts', handleRefresh);
+      clearInterval(interval);
+    };
+  }, []);
+
+  return counts;
 };

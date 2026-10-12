@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CalendarDays,
   Car,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   ExternalLink,
   FileText,
@@ -12,11 +17,171 @@ import {
   Search,
   User,
   Wallet,
+  X,
+  Check,
+  Plus,
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import XLSXStyle from 'xlsx-js-style';
+import toast from 'react-hot-toast';
+import { supabase } from '../services/supabaseClient';
+import AdvanceRequest from './AdvanceRequest';
+import { triggerAdvanceProcessedNotification } from '../services/whatsappService';
+
+// ==========================================
+// ENHANCED SEARCHABLE SINGLE-SELECT DROPDOWN
+// ==========================================
+const SearchableSelect = ({
+  icon: Icon,
+  value,
+  onChange,
+  options = [],
+  allLabel = 'All',
+  placeholder = 'Search...',
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredOptions = useMemo(() => {
+    if (!query.trim()) return options;
+    const q = query.toLowerCase();
+    return options.filter((opt) => String(opt).toLowerCase().includes(q));
+  }, [options, query]);
+
+  return (
+    <div className={`relative ${open ? 'z-50' : 'z-10'}`} ref={ref}>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((o) => !o);
+          setQuery('');
+        }}
+        className={`h-12 w-full rounded-xl border text-left text-sm font-semibold transition flex items-center justify-between pl-12 pr-4 outline-none cursor-pointer ${
+          value
+            ? 'border-indigo-500 bg-indigo-50/40 text-indigo-950 font-bold shadow-xs hover:border-indigo-600 focus:ring-4 focus:ring-indigo-100'
+            : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100'
+        }`}
+      >
+        {Icon && (
+          <Icon
+            size={18}
+            className={`pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 ${
+              value ? 'text-indigo-600' : 'text-slate-400'
+            }`}
+          />
+        )}
+        <span className="block truncate pr-2">{value || allLabel}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {value && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+                setOpen(false);
+              }}
+              className="p-1 rounded-md hover:bg-indigo-200/60 text-slate-400 hover:text-indigo-800 transition cursor-pointer"
+              title="Clear"
+            >
+              <X size={15} />
+            </span>
+          )}
+          <ChevronDown
+            size={17}
+            className={`pointer-events-none text-slate-400 transition-transform duration-200 ${
+              open ? 'rotate-180 text-indigo-600' : ''
+            }`}
+          />
+        </div>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 z-50 mt-1 max-h-64 w-full min-w-[220px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-fadeIn">
+          {options.length > 5 && (
+            <div className="p-2.5 border-b border-slate-100 bg-slate-50/70">
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={placeholder}
+                  className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-7 py-1.5 text-xs font-semibold text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                  autoFocus
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-52 overflow-y-auto p-1.5 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('');
+                setOpen(false);
+              }}
+              className={`flex w-full items-center justify-between px-3 py-2 rounded-xl font-semibold transition cursor-pointer ${
+                !value
+                  ? 'bg-indigo-50 text-indigo-700 font-bold'
+                  : 'text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <span>{allLabel}</span>
+              {!value && <Check size={14} className="text-indigo-600" />}
+            </button>
+
+            {filteredOptions.length === 0 ? (
+              <div className="py-4 text-center text-slate-400 text-xs">No matching options</div>
+            ) : (
+              filteredOptions.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => {
+                    onChange(opt);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-2 rounded-xl font-semibold transition cursor-pointer ${
+                    value === opt
+                      ? 'bg-indigo-50 text-indigo-700 font-bold'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className="truncate text-left">{opt}</span>
+                  {value === opt && <Check size={14} className="text-indigo-600 shrink-0 ml-2" />}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
 const OUTSTATION_SPREADSHEET_ID = '1WTT8ZQhtf1yeSChNn2uJeW5Tz2TvYjQLrxhTx5l4Fgw';
@@ -254,154 +419,387 @@ const TaDa = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false);
+  const [advanceActionModal, setAdvanceActionModal] = useState({
+    open: false,
+    item: null,
+    type: 'Approved',
+    remarks: '',
+    saving: false,
+  });
+
+  const handleOpenAdvanceAction = (item, type) => {
+    setAdvanceActionModal({
+      open: true,
+      item,
+      type,
+      remarks: type === 'Approved' ? 'Approved' : 'Operational requirements',
+      saving: false,
+    });
+  };
+
+  const handleConfirmAdvanceAction = async () => {
+    if (!advanceActionModal.item) return;
+    setAdvanceActionModal((prev) => ({ ...prev, saving: true }));
+
+    try {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const actualTimestamp = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+      const rawUser = localStorage.getItem('user');
+      const user = rawUser ? JSON.parse(rawUser) : {};
+      const approverName = user.Name || user.name || user.displayName || 'Neha Garg';
+
+      const target = advanceActionModal.item;
+      const statusType = advanceActionModal.type;
+      const remarksText = advanceActionModal.remarks.trim() || statusType;
+
+      if (target.dbId) {
+        const { error } = await supabase
+          .from('advance')
+          .update({
+            status: statusType,
+            remarks1: remarksText,
+            approved_by: approverName,
+            actual: actualTimestamp,
+          })
+          .eq('id', target.dbId);
+
+        if (error) throw error;
+      }
+
+      setAdvanceRows((prev) =>
+        prev.map((r) =>
+          r.id === target.id
+            ? {
+                ...r,
+                status: statusType,
+                remarks1: remarksText,
+                approvedBy: approverName,
+                actualDate: actualTimestamp,
+              }
+            : r
+        )
+      );
+
+      // Auto-trigger WhatsApp notification to 9201958125, 9321691120 + requester
+      triggerAdvanceProcessedNotification({
+        personName: target.employeeName,
+        fromLocation: target.from,
+        toLocation: target.to,
+        travelType: target.vehicleType,
+        startDate: target.startDate,
+        endDate: target.endDate,
+        advance: target.advanceAmount,
+        remarks1: remarksText,
+        status: statusType,
+        approvedBy: approverName,
+      }).catch((err) => console.warn('Advance WhatsApp notice:', err));
+
+      toast.success(`Advance request marked as ${statusType}! WhatsApp alert sent.`);
+      setAdvanceActionModal({ open: false, item: null, type: 'Approved', remarks: '', saving: false });
+    } catch (err) {
+      console.error('Advance action error:', err);
+      toast.error('Action failed: ' + err.message);
+      setAdvanceActionModal((prev) => ({ ...prev, saving: false }));
+    }
+  };
 
   const fetchTaDaData = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      let fmsSheetRows = [];
+      let visits = [];
       try {
-        fmsSheetRows = await fetchFmsRowsFromSheet();
-      } catch (sheetError) {
-        console.error('FMS sheet detail fetch failed:', sheetError);
+        const { data: dbTravel, error: dbErr } = await supabase
+          .from('travel_in_out')
+          .select('id, serial_no, person_name, date, timestamp, actual, from_location, to_location, in_vehicle_type, out_vehicle_type, total_running_km, in_vehicle_amount, vehicle_amount, in_vehicle_mtr_pic, vehical_mtr_pic, remarks, in_remarks')
+          .order('id', { ascending: false });
+
+        if (!dbErr && dbTravel && dbTravel.length > 0) {
+          visits = dbTravel.map((row) => {
+            const dateSource = row.date || row.timestamp || '';
+            const dateMeta = getMonthYear(dateSource);
+            const totalRunningKm = Math.round(Number(row.total_running_km) || 0);
+            const vehicleType = row.in_vehicle_type || row.out_vehicle_type || '';
+            const calculatedAmount = Math.round(totalRunningKm * getVehicleKmRate(vehicleType));
+
+            return {
+              id: `visit-${row.id}`,
+              source: 'FMS',
+              serialNo: row.serial_no || '',
+              employeeName: String(row.person_name || '').trim(),
+              date: row.date || formatDateValue(dateSource),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: row.from_location || '',
+              to: row.to_location || '',
+              inTime: formatTimeValue(row.timestamp),
+              outTime: formatTimeValue(row.actual || row.timestamp),
+              vehicleType,
+              totalRunningKm,
+              kmRate: getVehicleKmRate(vehicleType),
+              inVehicleAmount: Number(row.in_vehicle_amount) || calculatedAmount,
+              outVehicleAmount: Number(row.vehicle_amount) || '',
+              totalAmount: Number(row.in_vehicle_amount) || calculatedAmount,
+              remarks: row.remarks || row.in_remarks || '',
+              proofLinks: buildUrlLinks([
+                { label: 'IN Proof', url: row.in_vehicle_mtr_pic },
+                { label: 'OUT Proof', url: row.vehical_mtr_pic },
+              ]),
+            };
+          });
+        }
+      } catch (sbError) {
+        console.warn('Supabase travel_in_out fetch note:', sbError);
       }
 
-      const rawFmsRows = await fetchSheetRows('FMS').catch(() => []);
-      const visits = rawFmsRows
-        .filter((row) => {
-          const personName = String(row[2] || '').trim();
-          return personName && personName.toLowerCase() !== 'person name';
-        })
-        .map((row, index) => {
-          const fmsSheetRow = fmsSheetRows[index] || {};
-          const dateSource = row[0] || row[13] || '';
-          const dateMeta = getMonthYear(dateSource);
-          const rawKm = fmsSheetRow.totalRunningKm || parseNumber(row[7]);
-          const totalRunningKm = Math.round(rawKm);
-          const vehicleType = row[5] || row[16] || fmsSheetRow.vehicleType || '';
-          const calculatedAmount = Math.round(rawKm * getVehicleKmRate(vehicleType));
-          
-          const inProofUrl = row[8] || fmsSheetRow.inProofUrl;
-          const outProofUrl = (row[18] || row[15]) || fmsSheetRow.outProofUrl;
+      if (visits.length === 0) {
+        let fmsSheetRows = [];
+        try {
+          fmsSheetRows = await fetchFmsRowsFromSheet();
+        } catch (sheetError) {
+          console.error('FMS sheet detail fetch failed:', sheetError);
+        }
 
-          return {
-            id: `visit-${index}`,
-            source: 'FMS',
-            serialNo: row[1] || fmsSheetRow.serialNo || `VIS-${String(index + 1).padStart(3, '0')}`,
-            employeeName: String(row[2] || '').trim(),
-            date: formatDateValue(dateSource),
-            dateObj: dateMeta.dateObj,
-            month: dateMeta.month,
-            year: dateMeta.year,
-            from: row[3] || '',
-            to: row[4] || '',
-            inTime: formatTimeValue(row[0]),
-            outTime: formatTimeValue(row[13]),
-            vehicleType,
-            totalRunningKm,
-            kmRate: getVehicleKmRate(vehicleType),
-            inVehicleAmount: calculatedAmount,
-            outVehicleAmount: '',
-            totalAmount: calculatedAmount,
-            remarks: row[10] || '',
-            proofLinks: buildUrlLinks([
-              { label: 'IN Proof', url: inProofUrl },
-              { label: 'OUT Proof', url: outProofUrl },
-            ]),
-          };
-        });
+        const rawFmsRows = await fetchSheetRows('FMS').catch(() => []);
+        visits = rawFmsRows
+          .filter((row) => {
+            const personName = String(row[2] || '').trim();
+            return personName && personName.toLowerCase() !== 'person name';
+          })
+          .map((row, index) => {
+            const fmsSheetRow = fmsSheetRows[index] || {};
+            const dateSource = row[0] || row[13] || '';
+            const dateMeta = getMonthYear(dateSource);
+            const rawKm = fmsSheetRow.totalRunningKm || parseNumber(row[7]);
+            const totalRunningKm = Math.round(rawKm);
+            const vehicleType = row[5] || row[16] || fmsSheetRow.vehicleType || '';
+            const calculatedAmount = Math.round(rawKm * getVehicleKmRate(vehicleType));
+            
+            const inProofUrl = row[8] || fmsSheetRow.inProofUrl;
+            const outProofUrl = (row[18] || row[15]) || fmsSheetRow.outProofUrl;
 
-      const rawTravellingRows = await fetchSheetRows('Travelling').catch(() => []);
-      const travelling = rawTravellingRows
-        .filter((row) => {
-          const personName = String(row[1] || '').trim();
-          return personName && personName.toLowerCase() !== 'person name';
-        })
-        .map((row, index) => {
-          const personName = row[1] || '';
-          const dateTime = row[0] || '';
-          const fromLocation = row[2] || '';
-          const toLocation = row[3] || '';
-          const vehicleType = row[4] || '';
-          const stayDay = row[5] || '';
-          
-          const dateMeta = getMonthYear(dateTime);
-          const advanceAmount = parseNumber(row[16]);
+            return {
+              id: `visit-${index}`,
+              source: 'FMS',
+              serialNo: row[1] || fmsSheetRow.serialNo || `VIS-${String(index + 1).padStart(3, '0')}`,
+              employeeName: String(row[2] || '').trim(),
+              date: formatDateValue(dateSource),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: row[3] || '',
+              to: row[4] || '',
+              inTime: formatTimeValue(row[0]),
+              outTime: formatTimeValue(row[13]),
+              vehicleType,
+              totalRunningKm,
+              kmRate: getVehicleKmRate(vehicleType),
+              inVehicleAmount: calculatedAmount,
+              outVehicleAmount: '',
+              totalAmount: calculatedAmount,
+              remarks: row[10] || '',
+              proofLinks: buildUrlLinks([
+                { label: 'IN Proof', url: inProofUrl },
+                { label: 'OUT Proof', url: outProofUrl },
+              ]),
+            };
+          });
+      }
 
-          return {
-            id: `travel-${index}`,
-            source: 'Travelling',
-            serialNo: `TA-${String(index + 1).padStart(3, '0')}`,
-            employeeName: String(personName).trim(),
-            date: formatDateValue(dateTime),
-            dateObj: dateMeta.dateObj,
-            month: dateMeta.month,
-            year: dateMeta.year,
-            from: fromLocation,
-            to: toLocation,
-            inTime: formatTimeValue(dateTime),
-            outTime: '-',
-            vehicleType: vehicleType,
-            stayDay: parseNumber(stayDay),
-            advanceAmount,
-            totalAmount: advanceAmount,
-            proofLinks: buildUrlLinks([
-              { label: 'Stay Bill', url: row[8] },
-              { label: 'Food Bill', url: row[10] },
-              { label: 'Receipt', url: row[11] },
-            ]),
-          };
-        });
+      let travelling = [];
+      try {
+        const { data: dbOutstation, error: dbOutErr } = await supabase
+          .from('outstation_traveling')
+          .select('id, serial_no, name, timestamp, travel_date, return_date, from_location, to_location, vehicle_type, stay_date, advance_amount, stay_bill, fooding_bill, travel_receipt, local_travel_receipt, return_ticket')
+          .order('id', { ascending: false });
 
-      let rawAdvanceRows = await fetchAdvanceRowsFromSheet().catch(() => []);
+        if (!dbOutErr && dbOutstation && dbOutstation.length > 0) {
+          travelling = dbOutstation.map((row, index) => {
+            const dateTime = row.travel_date || row.timestamp || '';
+            const dateMeta = getMonthYear(dateTime);
+            const advanceAmount = Number(row.advance_amount) || 0;
+            const stayDay = parseNumber(row.stay_date);
 
-      const advances = rawAdvanceRows
-        .map(normalizeAdvanceRow)
-        .filter((row) => {
-          const personName = String(pickValue(row, ['personName', 'Person Name', 'employeeName', 'Employee Name']) || '').trim();
-          return personName && personName.toLowerCase() !== 'person name';
-        })
-        .map((row, index) => {
-          const employeeName = String(pickValue(row, ['personName', 'Person Name', 'employeeName', 'Employee Name']) || '').trim();
-          const timestamp = pickValue(row, ['timestamp', 'Timestamp']);
-          const startDate = pickValue(row, ['startDate', 'Start Date', 'fromDate']);
-          const endDate = pickValue(row, ['endDate', 'End Date', 'toDate']);
-          const planned = pickValue(row, ['planned', 'Planned']);
-          const actual = pickValue(row, ['actual', 'Actual']);
-          const dateSource = startDate || timestamp || planned || actual;
-          const dateMeta = getMonthYear(dateSource);
-          const advanceAmount = parseNumber(pickValue(row, ['advance', 'Advance', 'advanceAmount', 'Advance Amount']));
+            return {
+              id: `travel-${row.id || index}`,
+              source: 'Travelling',
+              serialNo: row.serial_no || `TA-${String(index + 1).padStart(3, '0')}`,
+              employeeName: String(row.name || '').trim(),
+              date: formatDateValue(dateTime),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: row.from_location || '',
+              to: row.to_location || '',
+              inTime: formatTimeValue(row.timestamp),
+              outTime: row.return_date ? formatDateValue(row.return_date) : '-',
+              vehicleType: row.vehicle_type || '',
+              stayDay: stayDay,
+              advanceAmount,
+              totalAmount: advanceAmount,
+              proofLinks: buildUrlLinks([
+                { label: 'Stay Bill', url: row.stay_bill },
+                { label: 'Food Bill', url: row.fooding_bill },
+                { label: 'Receipt', url: row.travel_receipt },
+                { label: 'Local Receipt', url: row.local_travel_receipt },
+                { label: 'Return Ticket', url: row.return_ticket },
+              ]),
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('Supabase outstation_traveling fetch note:', err);
+      }
 
-          return {
-            id: `advance-${index}`,
-            source: 'Advance',
-            serialNo: pickValue(row, ['serialNo', 'Serial No', 'serial']) || `AD-${String(index + 1).padStart(3, '0')}`,
-            employeeName,
-            date: formatDateValue(dateSource),
-            dateObj: dateMeta.dateObj,
-            month: dateMeta.month,
-            year: dateMeta.year,
-            from: pickValue(row, ['fromLocation', 'From Location', 'from', 'From']),
-            to: pickValue(row, ['toLocation', 'To Location', 'to', 'To']),
-            inTime: formatTimeValue(timestamp),
-            outTime: '-',
-            vehicleType: pickValue(row, ['travelType', 'Travel Type', 'vehicleType']),
-            startDate: formatDateValue(startDate),
-            endDate: formatDateValue(endDate),
-            plannedDate: formatDateValue(planned),
-            actualDate: formatDateValue(actual),
-            delay: pickValue(row, ['delay', 'Delay']),
-            companyName: pickValue(row, ['companyName', 'Company Name', 'Compnay Name', 'company']),
-            status: pickValue(row, ['status', 'Status']),
-            approvedBy: pickValue(row, ['approvedBy', 'Approved by', 'Approved By']),
-            remarks: pickValue(row, ['remarks', 'Remarks', 'Reamakrs', 'Reamarks']),
-            remarks1: pickValue(row, ['remarks1', 'Remarks1', 'Remarks 1']),
-            advanceAmount,
-            totalAmount: advanceAmount,
-            proofLinks: [],
-          };
-        });
+      if (travelling.length === 0) {
+        const rawTravellingRows = await fetchSheetRows('Travelling').catch(() => []);
+        travelling = rawTravellingRows
+          .filter((row) => {
+            const personName = String(row[1] || '').trim();
+            return personName && personName.toLowerCase() !== 'person name';
+          })
+          .map((row, index) => {
+            const personName = row[1] || '';
+            const dateTime = row[0] || '';
+            const fromLocation = row[2] || '';
+            const toLocation = row[3] || '';
+            const vehicleType = row[4] || '';
+            const stayDay = row[5] || '';
+            
+            const dateMeta = getMonthYear(dateTime);
+            const advanceAmount = parseNumber(row[16]);
+
+            return {
+              id: `travel-${index}`,
+              source: 'Travelling',
+              serialNo: `TA-${String(index + 1).padStart(3, '0')}`,
+              employeeName: String(personName).trim(),
+              date: formatDateValue(dateTime),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: fromLocation,
+              to: toLocation,
+              inTime: formatTimeValue(dateTime),
+              outTime: '-',
+              vehicleType: vehicleType,
+              stayDay: parseNumber(stayDay),
+              advanceAmount,
+              totalAmount: advanceAmount,
+              proofLinks: buildUrlLinks([
+                { label: 'Stay Bill', url: row[8] },
+                { label: 'Food Bill', url: row[10] },
+                { label: 'Receipt', url: row[11] },
+              ]),
+            };
+          });
+      }
+
+      let advances = [];
+      try {
+        const { data: dbAdvance, error: dbAdvErr } = await supabase
+          .from('advance')
+          .select('id, serial_no, person_name, timestamp, start_date, end_date, planned, actual, delay, from_location, to_location, travel_type, advance, company_name, status, approved_by, remarks, remarks1')
+          .order('id', { ascending: false });
+
+        if (!dbAdvErr && dbAdvance && dbAdvance.length > 0) {
+          advances = dbAdvance.map((row, index) => {
+            const employeeName = String(row.person_name || '').trim();
+            const dateSource = row.start_date || row.timestamp || row.planned || row.actual || '';
+            const dateMeta = getMonthYear(dateSource);
+            const advanceAmount = Number(row.advance) || 0;
+
+            return {
+              id: `advance-${row.id || index}`,
+              dbId: row.id,
+              rawData: row,
+              source: 'Advance',
+              serialNo: row.serial_no || `AD-${String(index + 1).padStart(3, '0')}`,
+              employeeName,
+              date: formatDateValue(dateSource),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: row.from_location || '',
+              to: row.to_location || '',
+              inTime: formatTimeValue(row.timestamp),
+              outTime: '-',
+              vehicleType: row.travel_type || '',
+              startDate: formatDateValue(row.start_date),
+              endDate: formatDateValue(row.end_date),
+              plannedDate: formatDateValue(row.planned),
+              actualDate: formatDateValue(row.actual),
+              delay: row.delay || '',
+              companyName: row.company_name || '',
+              status: row.status || 'Pending',
+              approvedBy: row.approved_by || '',
+              remarks: row.remarks || '',
+              remarks1: row.remarks1 || '',
+              advanceAmount,
+              totalAmount: advanceAmount,
+              proofLinks: [],
+            };
+          });
+        }
+      } catch (sbAdvError) {
+        console.warn('Supabase advance fetch note:', sbAdvError);
+      }
+
+      if (advances.length === 0) {
+        let rawAdvanceRows = await fetchAdvanceRowsFromSheet().catch(() => []);
+
+        advances = rawAdvanceRows
+          .map(normalizeAdvanceRow)
+          .filter((row) => {
+            const personName = String(pickValue(row, ['personName', 'Person Name', 'employeeName', 'Employee Name']) || '').trim();
+            return personName && personName.toLowerCase() !== 'person name';
+          })
+          .map((row, index) => {
+            const employeeName = String(pickValue(row, ['personName', 'Person Name', 'employeeName', 'Employee Name']) || '').trim();
+            const timestamp = pickValue(row, ['timestamp', 'Timestamp']);
+            const startDate = pickValue(row, ['startDate', 'Start Date', 'fromDate']);
+            const endDate = pickValue(row, ['endDate', 'End Date', 'toDate']);
+            const planned = pickValue(row, ['planned', 'Planned']);
+            const actual = pickValue(row, ['actual', 'Actual']);
+            const dateSource = startDate || timestamp || planned || actual;
+            const dateMeta = getMonthYear(dateSource);
+            const advanceAmount = parseNumber(pickValue(row, ['advance', 'Advance', 'advanceAmount', 'Advance Amount']));
+
+            return {
+              id: `advance-${index}`,
+              source: 'Advance',
+              serialNo: pickValue(row, ['serialNo', 'Serial No', 'serial']) || `AD-${String(index + 1).padStart(3, '0')}`,
+              employeeName,
+              date: formatDateValue(dateSource),
+              dateObj: dateMeta.dateObj,
+              month: dateMeta.month,
+              year: dateMeta.year,
+              from: pickValue(row, ['fromLocation', 'From Location', 'from', 'From']),
+              to: pickValue(row, ['toLocation', 'To Location', 'to', 'To']),
+              inTime: formatTimeValue(timestamp),
+              outTime: '-',
+              vehicleType: pickValue(row, ['travelType', 'Travel Type', 'vehicleType']),
+              startDate: formatDateValue(startDate),
+              endDate: formatDateValue(endDate),
+              plannedDate: formatDateValue(planned),
+              actualDate: formatDateValue(actual),
+              delay: pickValue(row, ['delay', 'Delay']),
+              companyName: pickValue(row, ['companyName', 'Company Name', 'Compnay Name', 'company']),
+              status: pickValue(row, ['status', 'Status']),
+              approvedBy: pickValue(row, ['approvedBy', 'Approved by', 'Approved By']),
+              remarks: pickValue(row, ['remarks', 'Remarks', 'Reamakrs', 'Reamarks']),
+              remarks1: pickValue(row, ['remarks1', 'Remarks1', 'Remarks 1']),
+              advanceAmount,
+              totalAmount: advanceAmount,
+              proofLinks: [],
+            };
+          });
+      }
 
       setVisitRows(visits.sort((a, b) => (b.dateObj || 0) - (a.dateObj || 0)));
       setTravellingRows(travelling.sort((a, b) => (b.dateObj || 0) - (a.dateObj || 0)));
@@ -469,6 +867,39 @@ const TaDa = () => {
   };
 
   const filteredRows = activeRows.filter((item) => matchesFilters(item));
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+
+  // Reset to first page when any filter or tab changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, searchTerm, employeeFilter, vehicleFilter, monthFilter, yearFilter, rowsPerPage]);
+
+  const totalRecords = filteredRows.length;
+  const totalPages = Math.ceil(totalRecords / rowsPerPage) || 1;
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
+
+  const paginatedRows = useMemo(() => {
+    return filteredRows.slice(startIndex, endIndex);
+  }, [filteredRows, startIndex, endIndex]);
+
+  const pageNumbers = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages = [];
+    if (currentPage <= 4) {
+      pages.push(1, 2, 3, 4, 5, '...', totalPages);
+    } else if (currentPage >= totalPages - 3) {
+      pages.push(1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+    } else {
+      pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
+    }
+    return pages;
+  }, [totalPages, currentPage]);
 
   const summary = filteredRows.reduce((acc, item) => {
     acc.records += 1;
@@ -836,7 +1267,7 @@ const TaDa = () => {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="relative z-30 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-indigo-100 bg-indigo-50 text-indigo-700">
@@ -867,67 +1298,43 @@ const TaDa = () => {
             />
           </label>
 
-          <label className="relative block">
-            <User size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-            <select
-              value={employeeFilter}
-              onChange={(event) => setEmployeeFilter(event.target.value)}
-              className="h-12 w-full appearance-none rounded-xl border border-slate-300 bg-white pl-12 pr-10 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100"
-            >
-              <option value="">All Employees</option>
-              {employeeOptions.map((employee) => (
-                <option key={employee} value={employee}>{employee}</option>
-              ))}
-            </select>
-            <ChevronDown size={17} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" />
-          </label>
+          <SearchableSelect
+            icon={User}
+            value={employeeFilter}
+            onChange={setEmployeeFilter}
+            options={employeeOptions}
+            allLabel="All Employees"
+            placeholder="Search employee..."
+          />
 
           {activeTab === 'fms' && (
-            <label className="relative block">
-              <Car size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select
-                value={vehicleFilter}
-                onChange={(event) => setVehicleFilter(event.target.value)}
-                className="h-12 w-full appearance-none rounded-xl border border-slate-300 bg-white pl-12 pr-10 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100"
-              >
-                <option value="">All Vehicles</option>
-                {vehicleOptions.map((vehicle) => (
-                  <option key={vehicle} value={vehicle}>{vehicle}</option>
-                ))}
-              </select>
-              <ChevronDown size={17} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" />
-            </label>
+            <SearchableSelect
+              icon={Car}
+              value={vehicleFilter}
+              onChange={setVehicleFilter}
+              options={vehicleOptions}
+              allLabel="All Vehicles"
+              placeholder="Search vehicle..."
+            />
           )}
 
-          <label className="relative block">
-            <CalendarDays size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-            <select
-              value={monthFilter}
-              onChange={(event) => setMonthFilter(event.target.value)}
-              className="h-12 w-full appearance-none rounded-xl border border-slate-300 bg-white pl-12 pr-10 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100"
-            >
-              <option value="">All Months</option>
-              {monthOptions.map((month) => (
-                <option key={month} value={month}>{month}</option>
-              ))}
-            </select>
-            <ChevronDown size={17} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" />
-          </label>
+          <SearchableSelect
+            icon={CalendarDays}
+            value={monthFilter}
+            onChange={setMonthFilter}
+            options={monthOptions}
+            allLabel="All Months"
+            placeholder="Search month..."
+          />
 
-          <label className="relative block">
-            <CalendarDays size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-            <select
-              value={yearFilter}
-              onChange={(event) => setYearFilter(event.target.value)}
-              className="h-12 w-full appearance-none rounded-xl border border-slate-300 bg-white pl-12 pr-10 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100"
-            >
-              <option value="">All Years</option>
-              {yearOptions.map((year) => (
-                <option key={year} value={year}>{year}</option>
-              ))}
-            </select>
-            <ChevronDown size={17} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" />
-          </label>
+          <SearchableSelect
+            icon={CalendarDays}
+            value={yearFilter}
+            onChange={setYearFilter}
+            options={yearOptions}
+            allLabel="All Years"
+            placeholder="Search year..."
+          />
         </div>
       </div>
 
@@ -959,7 +1366,19 @@ const TaDa = () => {
               Advance
             </button>
           </div>
-          <p className="text-sm font-semibold text-slate-500">{filteredRows.length} records shown</p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm font-semibold text-slate-500">{filteredRows.length} records shown</p>
+            {activeTab === 'advance' && (
+              <button
+                type="button"
+                onClick={() => setShowAdvanceModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-teal-700 cursor-pointer"
+              >
+                <Plus size={15} />
+                New Advance Request
+              </button>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -994,17 +1413,18 @@ const TaDa = () => {
                     <th className="px-4 py-3 font-black">Planned / Actual</th>
                     <th className="px-4 py-3 font-black">Approved By</th>
                     <th className="px-4 py-3 font-black">Remarks</th>
+                    <th className="px-4 py-3 font-black text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredRows.length === 0 ? (
                     <tr>
-                      <td colSpan="10" className="px-4 py-12 text-center text-sm font-semibold text-slate-400">
+                      <td colSpan="11" className="px-4 py-12 text-center text-sm font-semibold text-slate-400">
                         No advance records found.
                       </td>
                     </tr>
                   ) : (
-                    filteredRows.map((item) => (
+                    paginatedRows.map((item) => (
                       <tr key={item.id} className="transition hover:bg-slate-50">
                         <td className="px-4 py-3">
                           <p className="font-bold text-slate-800">{item.startDate || item.date}</p>
@@ -1035,11 +1455,41 @@ const TaDa = () => {
                           <p className="text-xs font-semibold text-slate-400">Actual: {item.actualDate || '-'}</p>
                         </td>
                         <td className="px-4 py-3 font-semibold text-slate-600">{item.approvedBy || '-'}</td>
-                        <td className="px-4 py-3 max-w-[260px]">
+                        <td className="px-4 py-3 max-w-[240px]">
                           <p className="truncate font-medium text-slate-600" title={item.remarks || ''}>{item.remarks || '-'}</p>
                           {item.remarks1 ? (
                             <p className="mt-1 truncate text-xs font-semibold text-slate-400" title={item.remarks1}>{item.remarks1}</p>
                           ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAdvanceAction(item, 'Approved')}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                                String(item.status).toLowerCase().includes('approved')
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white border border-emerald-200 shadow-2xs'
+                              }`}
+                              title="Approve Advance Request"
+                            >
+                              <Check size={12} strokeWidth={2.5} />
+                              <span>Approve</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenAdvanceAction(item, 'Rejected')}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                                String(item.status).toLowerCase().includes('rejected')
+                                  ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                  : 'bg-rose-50 text-rose-700 hover:bg-rose-600 hover:text-white border border-rose-200 shadow-2xs'
+                              }`}
+                              title="Reject Advance Request"
+                            >
+                              <X size={12} strokeWidth={2.5} />
+                              <span>Reject</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -1068,7 +1518,7 @@ const TaDa = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredRows.map((item) => (
+                    paginatedRows.map((item) => (
                       <tr key={item.id} className="transition hover:bg-slate-50">
                         <td className="px-4 py-3">
                           <p className="font-bold text-slate-800">{item.date}</p>
@@ -1103,9 +1553,234 @@ const TaDa = () => {
                 </tbody>
               </table>
             )}
+
+            {/* Ultra-Low Egress Pagination Bar */}
+            {filteredRows.length > 0 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/70 px-4 py-3 text-xs">
+                {/* Left: Entries info & Rows per page */}
+                <div className="flex flex-wrap items-center gap-3 text-slate-600">
+                  <span className="font-semibold">
+                    Showing <strong className="text-slate-900">{totalRecords === 0 ? 0 : startIndex + 1}</strong> to{' '}
+                    <strong className="text-slate-900">{endIndex}</strong> of{' '}
+                    <strong className="text-slate-900">{totalRecords}</strong> entries
+                  </span>
+                  <div className="flex items-center gap-1.5 pl-3 border-l border-slate-300">
+                    <span className="font-medium text-slate-500">Rows:</span>
+                    <select
+                      value={rowsPerPage}
+                      onChange={(e) => {
+                        setRowsPerPage(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 font-bold text-slate-800 outline-none focus:border-navy cursor-pointer"
+                    >
+                      <option value={15}>15</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Right: Page Navigation Buttons */}
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer shadow-2xs"
+                    title="First page"
+                  >
+                    <ChevronsLeft size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="flex items-center gap-1 h-8 px-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition font-semibold cursor-pointer shadow-2xs"
+                  >
+                    <ChevronLeft size={14} />
+                    <span>Prev</span>
+                  </button>
+
+                  <div className="flex items-center gap-1 px-1">
+                    {pageNumbers.map((p, idx) =>
+                      p === '...' ? (
+                        <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 font-bold">...</span>
+                      ) : (
+                        <button
+                          key={`page-${p}`}
+                          type="button"
+                          onClick={() => setCurrentPage(p)}
+                          className={`h-8 min-w-[32px] px-2 rounded-lg font-bold transition text-xs cursor-pointer ${
+                            currentPage === p
+                              ? 'bg-navy text-white shadow-xs'
+                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages || totalPages === 0}
+                    className="flex items-center gap-1 h-8 px-2.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition font-semibold cursor-pointer shadow-2xs"
+                  >
+                    <span>Next</span>
+                    <ChevronRight size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages || totalPages === 0}
+                    className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer shadow-2xs"
+                    title="Last page"
+                  >
+                    <ChevronsRight size={15} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Advance Request Modal */}
+      {showAdvanceModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-slate-950/75 p-2 sm:p-4 md:p-6 pt-3 sm:pt-5 md:pt-6 backdrop-blur-sm overflow-y-auto">
+            <div className="relative w-full max-w-4xl max-h-[94vh] flex flex-col overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200/80 animate-in fade-in-50 zoom-in-95 duration-150">
+              <AdvanceRequest
+                isModal
+                onClose={() => {
+                  setShowAdvanceModal(false);
+                  fetchTaDaData();
+                }}
+              />
+            </div>
+          </div>,
+          document.body
+        )
+      }
+
+      {/* Advance Approve / Reject Confirmation Modal */}
+      {advanceActionModal.open &&
+        createPortal(
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/75 p-3 sm:p-5 backdrop-blur-sm animate-in fade-in-50 duration-150">
+            <div className="w-full max-w-md rounded-2xl sm:rounded-3xl bg-white p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white ${
+                      advanceActionModal.type === 'Approved' ? 'bg-emerald-600' : 'bg-rose-600'
+                    }`}
+                  >
+                    {advanceActionModal.type === 'Approved' ? <Check size={18} /> : <X size={18} />}
+                  </div>
+                  <div>
+                    <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                      {advanceActionModal.type === 'Approved'
+                        ? 'Approve Advance Request'
+                        : 'Reject Advance Request'}
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      WhatsApp confirmation will be sent to 9201958125, 9321691120 & employee
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAdvanceActionModal({ open: false, item: null, type: 'Approved', remarks: '', saving: false })
+                  }
+                  className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {advanceActionModal.item && (
+                <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/80 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-bold">Person Name:</span>
+                    <span className="font-extrabold text-slate-900">{advanceActionModal.item.employeeName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-bold">Advance Amount:</span>
+                    <span className="font-black text-emerald-700">Rs. {advanceActionModal.item.advanceAmount}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-bold">Route:</span>
+                    <span className="font-semibold text-slate-700">
+                      {advanceActionModal.item.from} ➡️ {advanceActionModal.item.to}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-bold">Travel Type:</span>
+                    <span className="font-semibold text-slate-700">{advanceActionModal.item.vehicleType || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500 font-bold">Dates:</span>
+                    <span className="font-semibold text-slate-700">
+                      {advanceActionModal.item.startDate} to {advanceActionModal.item.endDate}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Remarks / Comments
+                </label>
+                <textarea
+                  rows={2}
+                  value={advanceActionModal.remarks}
+                  onChange={(e) =>
+                    setAdvanceActionModal((prev) => ({ ...prev, remarks: e.target.value }))
+                  }
+                  placeholder={
+                    advanceActionModal.type === 'Approved'
+                      ? 'Approved for travel advance'
+                      : 'Reason for rejecting this advance request'
+                  }
+                  className="w-full p-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 resize-none"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAdvanceActionModal({ open: false, item: null, type: 'Approved', remarks: '', saving: false })
+                  }
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs hover:bg-slate-50 transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={advanceActionModal.saving}
+                  onClick={handleConfirmAdvanceAction}
+                  className={`px-5 py-2 rounded-xl text-white font-bold text-xs transition flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-60 ${
+                    advanceActionModal.type === 'Approved'
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-rose-600 hover:bg-rose-700'
+                  }`}
+                >
+                  {advanceActionModal.saving && <RefreshCw size={13} className="animate-spin" />}
+                  <span>
+                    {advanceActionModal.type === 'Approved' ? 'Confirm Approval' : 'Confirm Rejection'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

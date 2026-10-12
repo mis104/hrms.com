@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Bell,
@@ -26,18 +27,25 @@ import {
   Play,
   Share2,
   ThumbsUp,
-  X
+  X,
+  Car,
+  Route,
+  CreditCard
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import useAuthStore from '../store/authStore';
 import toast from 'react-hot-toast';
 import { useHrmsNotifications } from '../hooks/useHrmsNotifications';
+import { supabase } from '../services/supabaseClient';
+import LocalTravel from './LocalTravel';
+import OutstationTravel from './OutstationTravel';
+import AdvanceRequest from './AdvanceRequest';
 
 const ATTENDANCE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx_GRdhFbP5zQX_HV72t9Ofcj5IHurSBJnPC5o0yr6_HvkLkMs9hOSLHIP0e26uG1iDlA/exec';
 const ATTENDANCE_SHEET_NAME = 'Data';
 const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
-const FEED_REFRESH_INTERVAL_MS = 30000;
-const FEED_CACHE_KEY = 'employee_mobile_feed_cache_v1';
+const FEED_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+const FEED_CACHE_KEY = 'employee_mobile_feed_cache_v2';
 const FEED_CACHE_TTL_MS = 10 * 60 * 1000;
 const MOBILE_ATTENDANCE_CACHE_KEY = 'employee_mobile_latest_attendance_cache_v1';
 const MOBILE_ATTENDANCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -367,6 +375,12 @@ const EmployeeMobileHome = () => {
   const [contacts, setContacts] = useState(initialContacts);
   const [contactsLoading, setContactsLoading] = useState(initialContacts.length === 0);
   const [showContacts, setShowContacts] = useState(false);
+  const [showLocalTravelModal, setShowLocalTravelModal] = useState(false);
+  const [showOutstationModal, setShowOutstationModal] = useState(false);
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false);
+  const [localTravelTab, setLocalTravelTab] = useState('in');
+  const [activeTravelRow, setActiveTravelRow] = useState(null);
+  const [isDesktop, setIsDesktop] = useState(() => typeof window !== 'undefined' ? window.innerWidth >= 1024 : false);
   const [contactSearch, setContactSearch] = useState('');
   const [now, setNow] = useState(() => new Date());
   const [showNotificationMenu, setShowNotificationMenu] = useState(false);
@@ -381,9 +395,45 @@ const EmployeeMobileHome = () => {
   const fileInputRef = React.useRef(null);
 
   useEffect(() => {
+    const handleResize = () => setIsDesktop(window.innerWidth >= 1024);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
     const clockId = window.setInterval(() => setNow(new Date()), 30000);
     return () => window.clearInterval(clockId);
   }, []);
+
+  // Fetch active travel entry for logged-in employee (pending Travel OUT)
+  useEffect(() => {
+    let isMounted = true;
+    const checkActiveTravel = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('travel_in_out')
+          .select('id, person_name, return_date, actual')
+          .order('id', { ascending: false })
+          .limit(50);
+
+        if (!error && data && isMounted) {
+          const eName = employeeName.trim().toLowerCase();
+          const myActive = data.find((r) => {
+            const isPending = !r.return_date || String(r.return_date).trim() === '' || !r.actual;
+            if (!isPending) return false;
+            const pName = String(r.person_name || '').toLowerCase();
+            return pName.includes(eName) || eName.includes(pName);
+          });
+          setActiveTravelRow(myActive || null);
+        }
+      } catch (e) {
+        console.warn('Active travel check error:', e);
+      }
+    };
+
+    checkActiveTravel();
+    return () => { isMounted = false; };
+  }, [employeeName, showLocalTravelModal]);
 
   const fetchContacts = async ({ silent = false } = {}) => {
     try {
@@ -513,36 +563,35 @@ const EmployeeMobileHome = () => {
 
       try {
         if (!silent) setFeedLoading(true);
-        const cb = `&_=${Date.now()}&realtime=1`;
-        const sheetName = encodeURIComponent('Onboard and Status');
-        const response = await fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=fetch&sheet=${sheetName}${cb}`, {
-          cache: 'no-store',
-        });
-        const json = await response.json();
-        const raw = json.data || [];
 
+        const { data: raw, error } = await supabase
+          .from('onboard_and_status')
+          .select('id, date, image, sms, sms_type, name, designation')
+          .order('id', { ascending: false });
+
+        if (error) throw error;
         if (!isMounted) return;
-        
-        if (raw.length > 1) {
-          const processed = raw.slice(1).map((row, index) => ({
-            date: row[0] || "",
-            candidatePhoto: row[1] || "",
-            sms: row[2] || "",
-            smsType: row[3] || "Announcement",
-            name: row[4] || "",
-            designation: row[5] || "",
-            notificationId: getFeedNotificationId(row, index),
+
+        if (Array.isArray(raw) && raw.length > 0) {
+          const processed = raw.map((row) => ({
+            id: row.id,
+            date: row.date || "",
+            candidatePhoto: row.image || "",
+            sms: row.sms || "",
+            smsType: row.sms_type || "Announcement",
+            name: row.name || "",
+            designation: row.designation || "",
+            notificationId: `feed-${row.id}-${row.date}|${row.sms_type}|${row.name}|${row.sms}`,
           })).filter(item => item.sms || item.candidatePhoto);
-          
-          const nextJoiners = processed.reverse();
-          writeCachedList(FEED_CACHE_KEY, nextJoiners);
-          React.startTransition(() => setNewJoiners(nextJoiners));
+
+          writeCachedList(FEED_CACHE_KEY, processed);
+          React.startTransition(() => setNewJoiners(processed));
         } else {
           writeCachedList(FEED_CACHE_KEY, []);
           setNewJoiners([]);
         }
       } catch (e) {
-        console.error("Failed to fetch feed:", e);
+        console.error("Failed to fetch feed from Supabase:", e);
       } finally {
         feedRequestRunning = false;
         if (isMounted) {
@@ -731,6 +780,23 @@ const EmployeeMobileHome = () => {
       setShowContacts(true);
       return;
     }
+    if (action.label === 'Local Travel' || action.path === '/local-travel') {
+      setLocalTravelTab(activeTravelRow ? 'out' : 'in');
+      setShowLocalTravelModal(true);
+      return;
+    }
+    if (action.label === 'Out Station Travel' || action.path === '/outstation-travel') {
+      setShowOutstationModal(true);
+      return;
+    }
+    if (action.label === 'Advance' || action.path === '/advance-request') {
+      setShowAdvanceModal(true);
+      return;
+    }
+    if (action.isUpcoming) {
+      toast(`${action.label} form is coming soon!`, { icon: 'ℹ️' });
+      return;
+    }
     if (action.externalUrl) {
       window.open(action.externalUrl, '_blank', 'noopener,noreferrer');
       return;
@@ -739,6 +805,9 @@ const EmployeeMobileHome = () => {
   };
 
   const quickActions = [
+    { icon: Car, label: 'Local Travel', path: '/local-travel', badge: activeTravelRow ? '1 Active' : null, iconClass: 'bg-violet-50 text-violet-700 ring-violet-100' },
+    { icon: Route, label: 'Out Station Travel', path: '/outstation-travel', iconClass: 'bg-sky-50 text-sky-700 ring-sky-100' },
+    { icon: CreditCard, label: 'Advance', path: '/advance-request', iconClass: 'bg-teal-50 text-teal-700 ring-teal-100' },
     { icon: Wallet, label: 'New System Development', externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSfbs_I-HzZT2miZUS6Aacvu6qd5vxkkD12Of_QjOKEnEZkphg/viewform?usp=header', path: '/employee-mobile', iconClass: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
     { icon: ClipboardList, label: 'HR Records', path: '/my-attendance', iconClass: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
     { icon: Fingerprint, label: 'Mark Attendance', path: '/mark-attendance', iconClass: 'bg-blue-50 text-blue-700 ring-blue-100' },
@@ -875,224 +944,268 @@ const EmployeeMobileHome = () => {
           ) : null}
         </header>
 
-        <div className="mt-5 space-y-6 lg:grid lg:grid-cols-[320px_minmax(0,680px)_360px] lg:items-start lg:gap-6 lg:space-y-0">
-        <div className="lg:sticky lg:top-20 lg:col-start-3 lg:row-start-1 lg:-mt-2 lg:space-y-5">
-        <motion.section
-          className="relative overflow-hidden rounded-[28px] bg-slate-950 p-4 text-white shadow-[0_24px_48px_rgba(15,23,42,0.24)] lg:min-h-0 lg:rounded-[24px] lg:p-5"
-          initial={{ opacity: 0, y: 18 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45, ease: "easeOut" }}
-        >
-          <span className="pointer-events-none absolute -right-20 -top-16 h-44 w-44 rounded-full bg-indigo-500/20 blur-2xl" />
-          <span className="pointer-events-none absolute -bottom-20 left-10 h-44 w-44 rounded-full bg-cyan-400/10 blur-2xl" />
-          <div className="relative z-10 flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Attendance Overview</p>
-              <h1 className="mt-1 text-xl font-black leading-tight">{greetingLabel}, {firstName}</h1>
-              <p className="mt-1 text-xs font-semibold text-slate-300">{currentDate}</p>
-            </div>
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-black text-white ring-1 ring-white/15">
-              <Sparkles size={12} />
-              {attendanceStatusLabel}
-            </span>
-          </div>
-
-          <div className="relative z-10 mt-5 grid grid-cols-[1fr_auto] items-center gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="grid h-10 w-10 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/10">
-                  <Clock size={20} />
-                </div>
+        {/* Sub-sections */}
+        {(() => {
+          const renderAttendanceOverview = () => (
+            <motion.section
+              className="relative overflow-hidden rounded-[26px] bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-5 text-white shadow-[0_20px_45px_rgba(15,23,42,0.22)] border border-slate-800"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.45, ease: "easeOut" }}
+            >
+              <span className="pointer-events-none absolute -right-20 -top-16 h-48 w-48 rounded-full bg-indigo-500/20 blur-3xl" />
+              <span className="pointer-events-none absolute -bottom-20 left-10 h-48 w-48 rounded-full bg-cyan-400/15 blur-3xl" />
+              <div className="relative z-10 flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-2xl font-black leading-none">{currentTime}</p>
-                  <p className="mt-1 text-[11px] font-semibold text-slate-400">Current time</p>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-300">Attendance Overview</p>
+                  <h1 className="mt-1 text-xl font-black leading-tight tracking-tight">{greetingLabel}, {firstName}</h1>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-300">{currentDate}</p>
                 </div>
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-2 text-[10px] font-bold text-slate-400">
-                <div>
-                  <p>Worked Hrs</p>
-                  <p className="mt-1 text-xs font-black text-white">{latestWorkingDuration}</p>
-                </div>
-                <div>
-                  <p>Check In</p>
-                  <p className="mt-1 text-xs font-black text-white">{formatTime(attendanceCardRecord?.inTime)}</p>
-                </div>
-                <div>
-                  <p>Check Out</p>
-                  <p className="mt-1 text-xs font-black text-white">{formatTime(attendanceCardRecord?.outTime)}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="relative grid h-20 w-20 place-items-center rounded-full border-4 border-white/25 bg-white/10 ring-1 ring-white/10">
-              <div className="absolute inset-2 rounded-full border border-white/15" />
-              <div className="text-center">
-                <p className="text-lg font-black">{goalProgress}%</p>
-                <p className="text-[9px] font-black uppercase leading-none text-white/70">Goal</p>
-              </div>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => navigate('/mark-attendance')}
-            className="relative z-10 mt-5 flex h-12 w-full items-center justify-between rounded-2xl bg-white px-4 text-sm font-black text-slate-950 shadow-[0_14px_28px_rgba(0,0,0,0.18)] active:scale-[0.99]"
-          >
-            <span className="inline-flex items-center gap-2">
-              <Fingerprint size={18} />
-              {attendanceActionLabel}
-            </span>
-            <Play size={16} fill="currentColor" />
-          </button>
-        </motion.section>
-
-        <section className="mt-6 lg:mt-0">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-black text-slate-950">Quick Actions</h2>
-            <button type="button" onClick={() => navigate('/my-attendance')} className="text-xs font-black text-indigo-600">
-              View all
-            </button>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 lg:gap-4">
-            {quickActions.map((action, idx) => (
-              <motion.button
-                key={action.label}
-                type="button"
-                onClick={() => handleQuickAction(action)}
-                className="flex h-[62px] items-center justify-between rounded-2xl border border-slate-200/80 bg-white px-3 text-left shadow-[0_14px_30px_rgba(15,23,42,0.07)] active:scale-[0.98] lg:h-[76px] lg:px-4"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.05 * idx, duration: 0.25 }}
-                aria-label={action.label}
-              >
-                <span className="flex min-w-0 items-center gap-2.5">
-                  <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-[14px] ring-1 ${action.iconClass}`}>
-                    <action.icon size={19} strokeWidth={2.4} />
-                  </span>
-                  <span className="truncate text-[12px] font-black text-slate-800">{action.label}</span>
+                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[11px] font-black text-white ring-1 ring-white/20 backdrop-blur-md">
+                  <Sparkles size={12} className="text-amber-300" />
+                  {attendanceStatusLabel}
                 </span>
-                <ArrowRight size={15} className="shrink-0 text-slate-400" />
-              </motion.button>
-            ))}
-          </div>
-        </section>
-        </div>
+              </div>
 
-        <div className="mt-6 space-y-6 lg:contents">
-          <section className="lg:sticky lg:top-24 lg:col-start-1 lg:row-start-1">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-black text-slate-950">Today Activity</h2>
-              <button type="button" onClick={() => navigate('/my-attendance')} className="text-xs font-black text-slate-500">
-                View All
-              </button>
-            </div>
-            <div className="mt-3 rounded-[24px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_30px_rgba(15,23,42,0.07)]">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="grid h-11 w-11 place-items-center rounded-2xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
-                    <CheckCircle2 size={21} />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-black text-slate-900">{attendanceStatusLabel}</p>
-                    <p className="mt-0.5 text-[11px] font-bold text-slate-500">
-                      {attendanceCardRecord ? `${formatTime(attendanceCardRecord.inTime)} - ${formatTime(attendanceCardRecord.outTime)}` : 'No attendance record yet'}
-                    </p>
+              <div className="relative z-10 mt-5 grid grid-cols-[1fr_auto] items-center gap-4">
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <div className="grid h-11 w-11 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/15 backdrop-blur-md text-cyan-300">
+                      <Clock size={22} />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-black leading-none tracking-tight">{currentTime}</p>
+                      <p className="mt-1 text-[11px] font-semibold text-slate-400">Current time</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-white/5 p-2.5 ring-1 ring-white/10 text-[10px] font-bold text-slate-400">
+                    <div>
+                      <p className="text-slate-400">Worked</p>
+                      <p className="mt-0.5 text-xs font-black text-white">{latestWorkingDuration}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Check In</p>
+                      <p className="mt-0.5 text-xs font-black text-emerald-400">{formatTime(attendanceCardRecord?.inTime)}</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400">Check Out</p>
+                      <p className="mt-0.5 text-xs font-black text-rose-300">{formatTime(attendanceCardRecord?.outTime)}</p>
+                    </div>
                   </div>
                 </div>
-                <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-700">{latestWorkingDuration}</span>
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                <div className="rounded-2xl bg-emerald-50 p-3 text-center ring-1 ring-emerald-100">
-                  <p className="text-base font-black text-emerald-700">{monthSummary.present}</p>
-                  <p className="text-[9px] font-black uppercase text-emerald-500">Present</p>
-                </div>
-                <div className="rounded-2xl bg-rose-50 p-3 text-center ring-1 ring-rose-100">
-                  <p className="text-base font-black text-rose-700">{monthSummary.absent}</p>
-                  <p className="text-[9px] font-black uppercase text-rose-500">Absent</p>
-                </div>
-                <div className="rounded-2xl bg-amber-50 p-3 text-center ring-1 ring-amber-100">
-                  <p className="text-base font-black text-amber-700">{monthSummary.late}</p>
-                  <p className="text-[9px] font-black uppercase text-amber-500">Late</p>
-                </div>
-              </div>
-            </div>
-          </section>
-        <section className="mt-2 lg:col-start-2 lg:row-start-1 lg:mt-0">
-          <div className="mb-3 flex items-center justify-between lg:mx-auto lg:max-w-[680px]">
-            <h2 className="text-base font-black text-slate-950">Company Updates</h2>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-600">
-              {newJoiners.length} New
-            </span>
-          </div>
-          
-          {feedLoading ? (
-            <div className="flex h-32 items-center justify-center rounded-[24px] bg-white shadow-[0_14px_30px_rgba(15,23,42,0.07)]">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-100 border-t-slate-700"></div>
-            </div>
-          ) : newJoiners.length > 0 ? (
-            <div className="space-y-6">
-              {/* Stories / Avatars Scroll */}
-              <motion.div 
-                className="flex w-full gap-4 overflow-x-auto pb-2 lg:mx-auto lg:max-w-[680px] [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              >
-                {newJoiners.slice(0, 10).map((person, idx) => (
-                  <motion.div 
-                    key={`story-${idx}`} 
-                    className="flex flex-col items-center gap-1.5 shrink-0"
-                    initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: idx * 0.05 }}
-                  >
-                    <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-[20px] border border-slate-200 bg-white p-[2px] shadow-[0_10px_22px_rgba(15,23,42,0.08)]">
-                      {person.candidatePhoto ? (
-                        <img 
-                          src={getDriveImageUrl(person.candidatePhoto, 200)} 
-                          alt="Story" 
-                          loading="lazy"
-                          decoding="async"
-                          className="h-full w-full rounded-full object-cover bg-gray-50" 
-                          onError={(e) => {
-                            if (!e.target.dataset.retried) {
-                              e.target.dataset.retried = "true";
-                              const match = person.candidatePhoto.match(/\/d\/([a-zA-Z0-9_-]+)/) || person.candidatePhoto.match(/id=([a-zA-Z0-9_-]+)/);
-                              if (match && match[1]) {
-                                e.target.src = `https://drive.google.com/uc?export=view&id=${match[1]}`;
-                              } else {
-                                e.target.src = person.candidatePhoto;
-                              }
-                            }
-                          }}
-                        />
-                      ) : (
-                        <div className="flex h-full w-full items-center justify-center rounded-[18px] bg-slate-100">
-                          <Megaphone size={24} className="text-slate-600" />
-                        </div>
-                      )}
-                    </div>
-                    <span className="w-[68px] truncate text-center text-[10px] font-black text-slate-700">{person.smsType.split(' ')[0]}</span>
-                  </motion.div>
-                ))}
-              </motion.div>
 
-              {/* Feed Cards */}
-              <div className="mt-4 flex flex-col gap-6 lg:mx-auto lg:max-w-[680px] lg:gap-5">
-                {newJoiners.slice(0, 10).map((person, idx) => (
-                  <motion.div 
-                    key={`feed-${idx}`}
-                    data-feed-notification-id={person.notificationId}
-                    className="relative overflow-hidden rounded-[24px] border border-slate-200/80 bg-white pb-2 shadow-[0_14px_30px_rgba(15,23,42,0.07)] transition-all lg:rounded-[18px] lg:pb-0 lg:shadow-[0_12px_28px_rgba(15,23,42,0.08)]"
-                    initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 + idx * 0.1 }}
+                <div className="relative grid h-20 w-20 place-items-center rounded-full border-4 border-indigo-400/30 bg-white/5 ring-1 ring-white/10 shadow-inner">
+                  <div className="absolute inset-2 rounded-full border border-white/10" />
+                  <div className="text-center">
+                    <p className="text-lg font-black text-white">{goalProgress}%</p>
+                    <p className="text-[9px] font-black uppercase leading-none text-indigo-300">Goal</p>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => navigate('/mark-attendance')}
+                className="relative z-10 mt-5 flex h-12 w-full items-center justify-between rounded-2xl bg-white hover:bg-slate-50 px-4 text-sm font-black text-slate-950 shadow-[0_10px_24px_rgba(0,0,0,0.25)] hover:shadow-[0_14px_30px_rgba(0,0,0,0.3)] transition-all cursor-pointer active:scale-[0.99]"
+              >
+                <span className="inline-flex items-center gap-2.5">
+                  <Fingerprint size={19} className="text-indigo-600" />
+                  <span>{attendanceActionLabel}</span>
+                </span>
+                <span className="grid h-7 w-7 place-items-center rounded-full bg-slate-900 text-white">
+                  <Play size={12} fill="currentColor" />
+                </span>
+              </button>
+            </motion.section>
+          );
+
+          const renderQuickActions = (isDesktopView = false) => (
+            <section>
+              <div className="flex items-center justify-between mb-3.5">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-indigo-600" />
+                  <h2 className="text-base font-black text-slate-900 tracking-tight">Quick Actions</h2>
+                  <span className="rounded-full bg-indigo-50 border border-indigo-100/80 px-2.5 py-0.5 text-[11px] font-black text-indigo-700">
+                    {quickActions.length} Services
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate('/my-attendance')}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition flex items-center gap-1 cursor-pointer"
+                >
+                  <span>View records</span>
+                  <ArrowRight size={13} />
+                </button>
+              </div>
+
+              {/* Active Journey Banner if user has an ongoing Travel IN */}
+              {activeTravelRow && (
+                <div className="mb-3.5 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 p-[1.5px] shadow-sm animate-in fade-in duration-300">
+                  <div className="flex items-center justify-between gap-3 rounded-[15px] bg-white p-3 sm:p-3.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-amber-50 text-amber-600 ring-1 ring-amber-100">
+                        <Car size={18} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="rounded bg-amber-100 px-1.5 py-0.2 text-[10px] font-black text-amber-800">
+                            {activeTravelRow.serial_no}
+                          </span>
+                          <span className="text-[11px] font-bold text-slate-500">Travel IN Done</span>
+                        </div>
+                        <p className="truncate text-xs font-black text-slate-900 mt-0.5">
+                          {activeTravelRow.from_location} ➔ {activeTravelRow.to_location}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLocalTravelTab('out');
+                        setShowLocalTravelModal(true);
+                      }}
+                      className="shrink-0 flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 px-3.5 py-2 text-xs font-black text-white shadow-xs active:scale-95 transition cursor-pointer"
+                    >
+                      <span>Mark OUT</span>
+                      <ArrowRight size={13} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className={
+                isDesktopView
+                  ? "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-6 gap-3.5"
+                  : "grid grid-cols-2 gap-3"
+              }>
+                {quickActions.map((action, idx) => (
+                  <motion.button
+                    key={action.label}
+                    type="button"
+                    onClick={() => handleQuickAction(action)}
+                    className={`group relative flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white px-3.5 text-left shadow-[0_4px_16px_rgba(15,23,42,0.04)] hover:shadow-[0_10px_25px_rgba(15,23,42,0.08)] hover:border-indigo-200 hover:-translate-y-0.5 transition-all duration-200 cursor-pointer active:scale-[0.98] ${
+                      isDesktopView ? "h-[74px]" : "h-[64px]"
+                    }`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.02 * idx, duration: 0.2 }}
+                    aria-label={action.label}
                   >
-                    {/* Header */}
-                    <div className="flex items-center justify-between p-4 pb-3 lg:px-4 lg:py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 lg:rounded-full">
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ring-1 shadow-xs transition-transform duration-200 group-hover:scale-105 ${action.iconClass}`}>
+                        <action.icon size={19} strokeWidth={2.4} />
+                      </span>
+                      <span className="min-w-0 pr-1">
+                        <span className="block text-[12px] font-black text-slate-800 group-hover:text-indigo-600 transition-colors leading-tight line-clamp-2">
+                          {action.label}
+                        </span>
+                        {action.badge ? (
+                          <span className="mt-0.5 inline-block text-[9px] font-black uppercase tracking-wider text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.2 rounded-full animate-pulse">
+                            {action.badge}
+                          </span>
+                        ) : action.isUpcoming ? (
+                          <span className="mt-0.5 inline-block text-[9px] font-bold uppercase tracking-wider text-amber-600 bg-amber-50 px-1 rounded">
+                            Soon
+                          </span>
+                        ) : null}
+                      </span>
+                    </span>
+                    <ArrowRight size={14} className="shrink-0 text-slate-300 group-hover:text-indigo-500 group-hover:translate-x-0.5 transition-all" />
+                  </motion.button>
+                ))}
+              </div>
+            </section>
+          );
+
+          const renderTodayActivity = () => (
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <h2 className="text-sm font-black text-slate-950 tracking-tight">Today Activity &amp; Stats</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate('/my-attendance')}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+                >
+                  Details &rarr;
+                </button>
+              </div>
+              <div className="rounded-[24px] border border-slate-200/90 bg-white p-4.5 shadow-[0_6px_20px_rgba(15,23,42,0.04)]">
+                <div className="flex items-center justify-between gap-3 pb-3.5 border-b border-slate-100">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-11 w-11 place-items-center rounded-2xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 shadow-xs">
+                      <CheckCircle2 size={21} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-black text-slate-900">{attendanceStatusLabel}</p>
+                      <p className="mt-0.5 text-[11px] font-bold text-slate-500">
+                        {attendanceCardRecord ? `${formatTime(attendanceCardRecord.inTime)} - ${formatTime(attendanceCardRecord.outTime)}` : 'No attendance record yet'}
+                      </p>
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">{latestWorkingDuration}</span>
+                </div>
+                <div className="mt-3.5 grid grid-cols-3 gap-2.5">
+                  <div className="rounded-2xl bg-emerald-50/80 p-3 text-center ring-1 ring-emerald-100/80">
+                    <p className="text-lg font-black text-emerald-700">{monthSummary.present}</p>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600">Present</p>
+                  </div>
+                  <div className="rounded-2xl bg-rose-50/80 p-3 text-center ring-1 ring-rose-100/80">
+                    <p className="text-lg font-black text-rose-700">{monthSummary.absent}</p>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-rose-600">Absent</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-50/80 p-3 text-center ring-1 ring-amber-100/80">
+                    <p className="text-lg font-black text-amber-700">{monthSummary.late}</p>
+                    <p className="text-[10px] font-black uppercase tracking-wider text-amber-600">Late</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          );
+
+          const renderCompanyUpdates = (isDesktopView = false) => (
+            <section>
+              <div className="mb-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-sky-500" />
+                  <h2 className="text-base font-black text-slate-950 tracking-tight">Company Updates</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-black text-slate-600">
+                  {newJoiners.length} New
+                </span>
+              </div>
+              
+              {feedLoading ? (
+                <div className="flex h-36 items-center justify-center rounded-[24px] bg-white border border-slate-200/80 shadow-[0_10px_25px_rgba(15,23,42,0.04)]">
+                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-100 border-t-slate-700"></div>
+                </div>
+              ) : newJoiners.length > 0 ? (
+                <div className="space-y-6">
+                  {/* Stories / Avatars Scroll */}
+                  <motion.div 
+                    className="flex w-full gap-4 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                  >
+                    {newJoiners.slice(0, 10).map((person, idx) => (
+                      <motion.div 
+                        key={`story-${idx}`} 
+                        className="flex flex-col items-center gap-1.5 shrink-0"
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ delay: idx * 0.04 }}
+                      >
+                        <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-[20px] border border-slate-200 bg-white p-[2px] shadow-[0_10px_22px_rgba(15,23,42,0.08)] hover:scale-105 transition-transform">
                           {person.candidatePhoto ? (
                             <img 
-                              src={getDriveImageUrl(person.candidatePhoto, 150)} 
-                              alt="Profile" 
+                              src={getDriveImageUrl(person.candidatePhoto, 200)} 
+                              alt="Story" 
                               loading="lazy"
                               decoding="async"
-                              className="h-full w-full object-cover" 
+                              className="h-full w-full rounded-full object-cover bg-gray-50" 
                               onError={(e) => {
                                 if (!e.target.dataset.retried) {
                                   e.target.dataset.retried = "true";
@@ -1106,86 +1219,162 @@ const EmployeeMobileHome = () => {
                               }}
                             />
                           ) : (
-                            <Megaphone size={18} className="text-slate-600" />
+                            <div className="flex h-full w-full items-center justify-center rounded-[18px] bg-slate-100">
+                              <Megaphone size={24} className="text-slate-600" />
+                            </div>
                           )}
                         </div>
-                        <div>
-                          <h3 className="text-sm font-bold text-slate-900">{person.name || "HR Updates"}</h3>
-                          <p className="text-[11px] font-semibold text-slate-500">{person.designation || person.date}</p>
-                        </div>
-                      </div>
-                      <div className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-slate-500">
-                        {person.smsType}
-                      </div>
-                    </div>
-
-                    {/* Image */}
-                    {person.candidatePhoto && (
-                      <div className="flex w-full justify-center bg-slate-50 lg:border-y lg:border-slate-100 lg:bg-slate-100">
-                        <img 
-                          src={getDriveImageUrl(person.candidatePhoto, 600)} 
-                          alt="Post" 
-                          loading="lazy"
-                          decoding="async"
-                          className="h-auto w-full object-contain max-h-[500px] lg:max-h-[620px]" 
-                          onError={(e) => {
-                            if (!e.target.dataset.retried) {
-                              e.target.dataset.retried = "true";
-                              const match = person.candidatePhoto.match(/\/d\/([a-zA-Z0-9_-]+)/) || person.candidatePhoto.match(/id=([a-zA-Z0-9_-]+)/);
-                              if (match && match[1]) {
-                                e.target.src = `https://drive.google.com/uc?export=view&id=${match[1]}`;
-                              } else {
-                                e.target.src = person.candidatePhoto;
-                              }
-                            }
-                          }}
-                        />
-                      </div>
-                    )}
-
-                    {/* Caption / Message */}
-                    <div className="px-4 pt-3 pb-2 lg:pb-3">
-                      <p className="whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-slate-700">
-                        {person.name && <span className="mr-2 font-bold text-slate-900">{person.name}</span>}
-                        {person.sms}
-                      </p>
-                      <p className="text-[10px] font-semibold text-slate-400 mt-2 uppercase tracking-wide">{person.date}</p>
-                    </div>
-                    <div className="hidden border-t border-slate-100 px-2 py-1.5 lg:flex">
-                      {[
-                        { icon: ThumbsUp, label: 'Like' },
-                        { icon: MessageCircle, label: 'Comment' },
-                        { icon: Share2, label: 'Share' },
-                      ].map((action) => (
-                        <button
-                          key={action.label}
-                          type="button"
-                          className="flex h-10 flex-1 items-center justify-center gap-2 rounded-lg text-sm font-black text-slate-500 transition hover:bg-slate-50"
-                        >
-                          <action.icon size={17} />
-                          {action.label}
-                        </button>
-                      ))}
-                    </div>
+                        <span className="w-[68px] truncate text-center text-[10px] font-black text-slate-700">{person.smsType.split(' ')[0]}</span>
+                      </motion.div>
+                    ))}
                   </motion.div>
-                ))}
+
+                  {/* Feed Cards */}
+                  <div className="flex flex-col gap-6">
+                    {newJoiners.slice(0, 10).map((person, idx) => (
+                      <motion.div 
+                        key={`feed-${idx}`}
+                        data-feed-notification-id={person.notificationId}
+                        className="relative overflow-hidden rounded-[24px] border border-slate-200/90 bg-white pb-2 shadow-[0_10px_25px_rgba(15,23,42,0.05)] transition-all hover:shadow-[0_16px_36px_rgba(15,23,42,0.08)]"
+                        initial={{ opacity: 0, y: 18 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.08 + idx * 0.08 }}
+                      >
+                        {/* Header */}
+                        <div className="flex items-center justify-between p-4 pb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100">
+                              {person.candidatePhoto ? (
+                                <img 
+                                  src={getDriveImageUrl(person.candidatePhoto, 150)} 
+                                  alt="Profile" 
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="h-full w-full object-cover" 
+                                  onError={(e) => {
+                                    if (!e.target.dataset.retried) {
+                                      e.target.dataset.retried = "true";
+                                      const match = person.candidatePhoto.match(/\/d\/([a-zA-Z0-9_-]+)/) || person.candidatePhoto.match(/id=([a-zA-Z0-9_-]+)/);
+                                      if (match && match[1]) {
+                                        e.target.src = `https://drive.google.com/uc?export=view&id=${match[1]}`;
+                                      } else {
+                                        e.target.src = person.candidatePhoto;
+                                      }
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                <Megaphone size={18} className="text-slate-600" />
+                              )}
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-bold text-slate-900">{person.name || "HR Updates"}</h3>
+                              <p className="text-[11px] font-semibold text-slate-500">{person.designation || person.date}</p>
+                            </div>
+                          </div>
+                          <div className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-[9px] font-black uppercase tracking-wider text-slate-600">
+                            {person.smsType}
+                          </div>
+                        </div>
+
+                        {/* Image */}
+                        {person.candidatePhoto && (
+                          <div className="flex w-full justify-center bg-slate-50 border-y border-slate-100 p-2 sm:p-3">
+                            <img 
+                              src={getDriveImageUrl(person.candidatePhoto, 800)} 
+                              alt="Post" 
+                              loading="lazy"
+                              decoding="async"
+                              className="h-auto w-full object-contain max-h-[520px] rounded-xl shadow-xs" 
+                              onError={(e) => {
+                                if (!e.target.dataset.retried) {
+                                  e.target.dataset.retried = "true";
+                                  const match = person.candidatePhoto.match(/\/d\/([a-zA-Z0-9_-]+)/) || person.candidatePhoto.match(/id=([a-zA-Z0-9_-]+)/);
+                                  if (match && match[1]) {
+                                    e.target.src = `https://drive.google.com/uc?export=view&id=${match[1]}`;
+                                  } else {
+                                    e.target.src = person.candidatePhoto;
+                                  }
+                                }
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Caption / Message */}
+                        <div className="px-5 pt-3 pb-2">
+                          <p className="whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-slate-700">
+                            {person.name && <span className="mr-2 font-bold text-slate-900">{person.name}</span>}
+                            {person.sms}
+                          </p>
+                          <p className="text-[10px] font-semibold text-slate-400 mt-2 uppercase tracking-wide">{person.date}</p>
+                        </div>
+
+                        <div className="border-t border-slate-100 px-3 py-2 flex items-center justify-around">
+                          {[
+                            { icon: ThumbsUp, label: 'Like' },
+                            { icon: MessageCircle, label: 'Comment' },
+                            { icon: Share2, label: 'Share' },
+                          ].map((action) => (
+                            <button
+                              key={action.label}
+                              type="button"
+                              className="flex h-9 flex-1 items-center justify-center gap-2 rounded-xl text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-slate-50 transition cursor-pointer"
+                            >
+                              <action.icon size={15} />
+                              {action.label}
+                            </button>
+                          ))}
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[24px] bg-white p-8 text-center border border-slate-200/80 shadow-[0_10px_25px_rgba(15,23,42,0.04)]">
+                  <p className="text-sm font-bold text-slate-400">No new joiners or updates recently.</p>
+                </div>
+              )}
+            </section>
+          );
+
+          return isDesktop ? (
+            <div className="mt-5 space-y-7">
+              {/* Top: Full-Width Spacious Quick Actions Command Grid */}
+              {renderQuickActions(true)}
+
+              {/* 2-Column Balanced Dashboard Workspace */}
+              <div className="grid grid-cols-[minmax(0,1fr)_390px] xl:grid-cols-[minmax(0,1fr)_430px] gap-8 items-start">
+                {/* Left Column: Company Updates & Feed Posts */}
+                <div className="min-w-0">
+                  {renderCompanyUpdates(true)}
+                </div>
+
+                {/* Right Column: Sticky Personal Attendance & Stats Sidebar */}
+                <div className="sticky top-6 space-y-6">
+                  {renderAttendanceOverview()}
+                  {renderTodayActivity()}
+                </div>
               </div>
             </div>
           ) : (
-            <div className="rounded-[24px] bg-white p-8 text-center shadow-[0_14px_30px_rgba(15,23,42,0.07)]">
-              <p className="text-sm font-bold text-slate-400">No new joiners recently.</p>
+            <div className="mt-5 space-y-6">
+              {renderAttendanceOverview()}
+              {renderQuickActions(false)}
+              {renderTodayActivity()}
+              {renderCompanyUpdates(false)}
             </div>
-          )}
-        </section>
-      </div>
+          );
+        })()}
 
-      {showContacts && (
-        <div className="fixed inset-0 z-[140] flex items-end justify-center bg-slate-950/55 p-4 pb-24 backdrop-blur-sm lg:items-center lg:pb-4">
-          <motion.div
-            initial={{ opacity: 0, y: 22, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            className="w-full max-w-md overflow-hidden rounded-[30px] bg-white shadow-[0_28px_70px_rgba(15,23,42,0.28)] lg:max-w-xl"
-          >
+      {showContacts &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-slate-950/65 p-3 sm:p-4 pt-4 sm:pt-8 backdrop-blur-sm overflow-y-auto">
+            <motion.div
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              className="w-full max-w-md overflow-hidden rounded-[30px] bg-white shadow-2xl lg:max-w-xl"
+            >
             <div className="border-b border-slate-100 px-5 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -1274,10 +1463,45 @@ const EmployeeMobileHome = () => {
               )}
             </div>
           </motion.div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      </div>
+      {/* Local Travel Information Modal */}
+      {showLocalTravelModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-slate-950/75 p-2 sm:p-4 md:p-6 pt-3 sm:pt-5 md:pt-6 backdrop-blur-sm overflow-y-auto">
+            <div className="relative w-full max-w-4xl lg:max-w-5xl max-h-[94vh] flex flex-col overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200/80 animate-in fade-in-50 zoom-in-95 duration-150">
+              <LocalTravel isModal initialTab={localTravelTab} onClose={() => setShowLocalTravelModal(false)} />
+            </div>
+          </div>,
+          document.body
+        )
+      }
+
+      {/* Out Station Travel Modal */}
+      {showOutstationModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-slate-950/75 p-2 sm:p-4 md:p-6 pt-3 sm:pt-5 md:pt-6 backdrop-blur-sm overflow-y-auto">
+            <div className="relative w-full max-w-4xl lg:max-w-5xl max-h-[94vh] flex flex-col overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200/80 animate-in fade-in-50 zoom-in-95 duration-150">
+              <OutstationTravel isModal onClose={() => setShowOutstationModal(false)} />
+            </div>
+          </div>,
+          document.body
+        )
+      }
+
+      {/* Advance Request Modal */}
+      {showAdvanceModal &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-start justify-center bg-slate-950/75 p-2 sm:p-4 md:p-6 pt-3 sm:pt-5 md:pt-6 backdrop-blur-sm overflow-y-auto">
+            <div className="relative w-full max-w-4xl lg:max-w-5xl max-h-[94vh] flex flex-col overflow-hidden rounded-2xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200/80 animate-in fade-in-50 zoom-in-95 duration-150">
+              <AdvanceRequest isModal onClose={() => setShowAdvanceModal(false)} />
+            </div>
+          </div>,
+          document.body
+        )
+      }
 
       </div>
     </div>

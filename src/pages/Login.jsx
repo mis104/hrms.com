@@ -17,121 +17,7 @@ import useAuthStore from "../store/authStore";
 import { pageRouteMap } from "../config/hrModules";
 import { getUserRole, isMobileViewport } from "../utils/authRole";
 
-const SHEET_API_URL = `${import.meta.env.VITE_GOOGLE_SHEET_URL}?sheet=USER&action=fetch`;
-const LEAVING_API_URL = `${import.meta.env.VITE_LEAVING_SHEET_URL}?sheet=LEAVING&action=fetch`;
-const USER_CACHE_KEY = "hr-fms-user-cache-v3";
-const USER_CACHE_TTL = 30 * 60 * 1000; // 30 minutes cache for instant login
-const USER_FETCH_TIMEOUT = 20000;
-const LEAVING_FETCH_TIMEOUT = 1500; // Fast timeout for leaving check so it doesn't block
-
-localStorage.removeItem("hasSeenLanguageHint");
-
-const fetchJsonWithTimeout = async (url, timeoutMs) => {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    return await response.json();
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-};
-
-const readUserCache = () => {
-  try {
-    const cached = JSON.parse(localStorage.getItem(USER_CACHE_KEY) || "null");
-    if (!cached?.rows || !cached?.cachedAt) return null;
-    if (Date.now() - cached.cachedAt > USER_CACHE_TTL) return null;
-    return cached.rows;
-  } catch {
-    return null;
-  }
-};
-
-const writeUserCache = (rows) => {
-  try {
-    localStorage.setItem(USER_CACHE_KEY, JSON.stringify({ rows, cachedAt: Date.now() }));
-  } catch {
-    // Storage is optional; login should never fail because cache is unavailable.
-  }
-};
-
-const normalizeHeader = (value) => value?.toString().trim().toLowerCase().replace(/\s+/g, " ");
-
-const findHeaderIndex = (headers, names) => {
-  const normalizedNames = names.map(normalizeHeader);
-  return headers.findIndex((header) => normalizedNames.includes(normalizeHeader(header)));
-};
-
-const getCellByHeader = (headers, row, names, fallbackIndex = -1) => {
-  const headerIndex = findHeaderIndex(headers, names);
-  const index = headerIndex !== -1 ? headerIndex : fallbackIndex;
-  if (index === -1) return "";
-  return row[index] !== undefined && row[index] !== null ? row[index].toString().trim() : "";
-};
-
-const fetchUserRows = async () => {
-  const cachedRows = readUserCache();
-  if (cachedRows) return cachedRows;
-
-  const result = await fetchJsonWithTimeout(`${SHEET_API_URL}&_t=${Date.now()}`, USER_FETCH_TIMEOUT);
-  if (!result?.success || !Array.isArray(result.data)) {
-    throw new Error("Error fetching user data");
-  }
-
-  writeUserCache(result.data);
-  return result.data;
-};
-
-const fetchLeavingRows = async () => {
-  try {
-    const result = await fetchJsonWithTimeout(`${LEAVING_API_URL}&_t=${Date.now()}`, LEAVING_FETCH_TIMEOUT);
-    if (!result?.success || !Array.isArray(result.data)) return [];
-    return result.data;
-  } catch (error) {
-    console.warn("Leaving Fetch skipped:", error);
-    return [];
-  }
-};
-
-const parseUsers = (rows) => {
-  const headers = rows?.[0] || [];
-  const users = rows.slice(1).map((row, index) => {
-    const obj = {};
-    headers.forEach((header, i) => {
-      obj[header] = row[i];
-    });
-    obj.rowIndex = index + 2; // Data starts at row 2 in sheets
-    obj._displayName = getCellByHeader(headers, row, ["Name", "Sales Person Name", "Person Name", "Employee Name"], 0);
-    obj._authUsername = getCellByHeader(headers, row, ["Username", "User Name", "Login Username"], 1);
-    obj._authPassword = getCellByHeader(headers, row, ["Password", "Passcode"], 2);
-    obj.Name = obj.Name || obj._displayName;
-    obj.Username = obj.Username || obj["User Name"] || obj._authUsername;
-    obj.profilePic = row[12] || ""; // Column M
-
-    const deletedMarker = getCellByHeader(headers, row, ["Deleted", "Delete", "Status", "User Status"], 10);
-    obj.isDeleted = ["deleted", "inactive", "disabled"].includes(deletedMarker.toLowerCase());
-    return obj;
-  });
-
-  return { headers, users };
-};
-
-const parseLeavingData = (rows) => {
-  const headers = rows.length > 5 ? rows[5] : [];
-  const data = rows.length > 6
-    ? rows.slice(6).map((row) => {
-      const obj = {};
-      headers.forEach((header, index) => {
-        obj[header] = row[index];
-      });
-      return obj;
-    })
-    : [];
-
-  return { headers, data };
-};
+import { supabase } from "../services/supabaseClient";
 
 const resolveTargetRoute = (matchedUser) => {
   const userRole = getUserRole(matchedUser);
@@ -139,7 +25,7 @@ const resolveTargetRoute = (matchedUser) => {
   if (userRole === "admin") return "/";
   if (userRole === "employee" && isMobileViewport()) return "/employee-mobile";
 
-  const pageAccess = matchedUser["Pages Access"];
+  const pageAccess = matchedUser["Pages Access"] || matchedUser.pages_access || "";
   if (!pageAccess) return userRole === "recruiter" ? "/indent" : "/my-profile";
 
   const accessList = pageAccess.split(",").map((page) => page.trim().toLowerCase());
@@ -168,71 +54,75 @@ const Login = () => {
     setSubmitting(true);
 
     try {
-      const userRowsPromise = fetchUserRows();
-      const leavingRowsPromise = fetchLeavingRows();
+      const cleanUsername = username.trim();
+      const cleanPassword = password.trim();
 
-      const userRows = await userRowsPromise;
-      const { headers: userHeaders, users } = parseUsers(userRows);
+      if (!cleanUsername || !cleanPassword) {
+        toast.error("Please enter username and password");
+        setSubmitting(false);
+        return;
+      }
 
-      const normalizedUsername = username.trim().toLowerCase();
-      const matchedUser = users.find(
-        (user) => user._authUsername.toLowerCase() === normalizedUsername && user._authPassword === password.trim() && !user.isDeleted
+      // Query user directly from Supabase
+      const { data: users, error } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('username', cleanUsername);
+
+      if (error) {
+        console.error("Supabase Login Error:", error);
+        throw error;
+      }
+
+      const userRecord = (users || []).find(
+        (u) => u.username.toLowerCase() === cleanUsername.toLowerCase() && u.password === cleanPassword
       );
 
-      if (!matchedUser) {
+      if (!userRecord) {
         toast.error("Invalid credentials");
         setSubmitting(false);
         return;
       }
 
-      const leavingRows = await leavingRowsPromise;
-      const { headers: leavingHeaders, data: leavingData } = parseLeavingData(leavingRows);
-      const userName = matchedUser._displayName || matchedUser.Name || matchedUser["Sales Person Name"] || matchedUser._authUsername;
-      const isUserLeaving = leavingData.some((record) => {
-        const leavingName = record[leavingHeaders[2]];
-        const leavingStatus = record[leavingHeaders[13]];
-        return (
-          leavingName &&
-          userName &&
-          leavingName.toString().toLowerCase() === userName.toString().toLowerCase() &&
-          leavingStatus !== null &&
-          leavingStatus !== undefined &&
-          leavingStatus !== ""
-        );
-      });
-
-      if (isUserLeaving) {
+      const empStatus = (userRecord.employee_status || '').toLowerCase();
+      if (empStatus === 'inactive' || empStatus === 'left' || empStatus === 'terminated' || userRecord.is_active === false) {
         toast.error("Employee access has been deactivated");
         setSubmitting(false);
         return;
       }
 
+      // Format user object for compatibility across all components
+      const authUser = {
+        ...userRecord,
+        Name: userRecord.name,
+        Username: userRecord.username,
+        Password: userRecord.password,
+        Admin: userRecord.admin,
+        'Pages Access': userRecord.pages_access || '',
+        pagesAccess: userRecord.pages_access || '',
+        Manual: userRecord.manual || 'No',
+        Profile: userRecord.profile || '',
+        profilePic: userRecord.profile || '',
+        'Employee Type': userRecord.employee_type || '',
+        latitude: userRecord.latitude,
+        longitude: userRecord.longitude,
+        Range: userRecord.range,
+        'Time In': userRecord.time_in || '',
+        'Time Out': userRecord.time_out || '',
+        Category: userRecord.category || '',
+        'Employee Status': userRecord.employee_status || 'Active',
+        _displayName: userRecord.name,
+        _authUsername: userRecord.username,
+      };
+
       toast.success("Login successful!");
-      localStorage.setItem("user", JSON.stringify(matchedUser));
-      login(matchedUser);
+      localStorage.setItem("user", JSON.stringify(authUser));
+      login(authUser);
 
-      try {
-        const FETCH_URL = import.meta.env.VITE_GOOGLE_SHEET_URL;
-        const JOIN_URL = import.meta.env.VITE_JOINING_SHEET_URL;
-        const JOINING_SUBMIT_URL = "https://script.google.com/macros/s/AKfycbwhFgVoAB4S1cKrU0iDRtCH5B2K-ol2c0RmaaEWXGqv0bdMzs3cs3kPuqOfUAR3KHYZ7g/exec";
-
-        if (FETCH_URL) {
-          fetch(`${FETCH_URL}?sheet=FMS&action=fetch`);
-          fetch(`${FETCH_URL}?sheet=Calling Tracking&action=fetch`);
-          fetch(`${FETCH_URL}?sheet=USER&action=fetch`).then((response) => response.json()).then((freshUserData) => {
-            if (freshUserData?.success && Array.isArray(freshUserData.data)) writeUserCache(freshUserData.data);
-          }).catch(() => {});
-        }
-        if (JOIN_URL) fetch(`${JOIN_URL}?action=read&sheet=JOINING_FMS`);
-        fetch(`${JOINING_SUBMIT_URL}?action=read&sheet=JOINING ENTRY FORM`);
-      } catch (prefetchError) {
-        console.error("Prefetch error", prefetchError);
-      }
-
-      navigate(resolveTargetRoute(matchedUser), { replace: true });
+      navigate(resolveTargetRoute(authUser), { replace: true });
     } catch (error) {
-      console.error(error);
-      toast.error(error.message || "Network error");
+      console.error("Login catch error:", error);
+      toast.error(error.message || "Login failed");
     } finally {
       setSubmitting(false);
     }

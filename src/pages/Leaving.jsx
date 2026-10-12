@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, X, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { supabase } from '../services/supabaseClient';
 
 const Leaving = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -30,7 +31,7 @@ const Leaving = () => {
       businessWhatsapp: false,
       officialEmail: false,
       callForwarding: false
-},
+    },
     callForwardNumber: '',
     finalExitInterview: false,
     finalExitStatus: ''
@@ -41,55 +42,45 @@ const Leaving = () => {
     setError(null);
 
     try {
-      // Fetch data from FMS sheet
-      const response = await fetch(
-        `${import.meta.env.VITE_LEAVING_SHEET_URL}?sheet=FMS&action=fetch&_=${Date.now()}`
-      );
+      const { data, error: sbError } = await supabase
+        .from('leaving_fms')
+        .select('*')
+        .order('id', { ascending: true });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (sbError) throw sbError;
 
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch data from FMS sheet');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      const processedData = rawData.slice(7).map((row, index) => {
-
-        return {
-          originalRow: row, // Store full row for preserving data
-          id: index, // unique key for React
-          employeeId: row[5] || '',
-          lastWorkingDay: row[7] || '',
-          reason: row[8] || '',
-          salary: row[9] || '',
-          candidateName: row[10] || '',
-          designation: row[11] || '',
-          mobileNumber: row[12] || ''
-        };
-      }).filter(item => {
-        // Basic filter for valid rows
+      const processedData = (data || []).map((row) => ({
+        id: row.id,
+        employeeId: row.employee_id || '',
+        lastWorkingDay: row.last_working_day || '',
+        reason: row.reason_for_resignation || '',
+        salary: row.salary || '',
+        candidateName: row.candidate_name || '',
+        designation: row.designation || '',
+        mobileNumber: row.mobile_no || '',
+        ex1Planned: row.ex1_planned || '',
+        ex1Actual: row.ex1_actual || '',
+        ex1Status: row.ex1_status || '',
+        ex2Planned: row.ex2_planned || '',
+        ex2Actual: row.ex2_actual || '',
+        ex2Status: row.ex2_status || '',
+        ex3Planned: row.ex3_planned || '',
+        ex3Actual: row.ex3_actual || '',
+        ex3Status: row.ex3_status || '',
+        ex3ExitChecklist: row.ex3_exit_checklist || '',
+        ex4Planned: row.ex4_planned || '',
+        ex4Actual: row.ex4_actual || '',
+        ex4Status: row.ex4_status || '',
+        leaving: row.leaving || '',
+        exitChecklist: row.exit_checklist || '',
+        originalRow: row
+      })).filter(item => {
         if (!item.employeeId && !item.candidateName) return false;
-
-        // Filter out "Archived" rows based on Column AS (Index 44)
-        // If "Yes", hide from this page (Leaving Page)
-        const row = item.originalRow;
-        const isArchivedManual = row[44] && row[44].toString().trim().toLowerCase() === 'yes';
-        const isChecklistFilled = row[42] && row[42].toString().trim().toLowerCase() === 'done';
-
-        return !isArchivedManual && !isChecklistFilled;
+        const isChecklistFilled = String(item.ex4Status || '').trim().toLowerCase() === 'done';
+        return !isChecklistFilled;
       });
 
       setLeavingData(processedData);
-
     } catch (error) {
       console.error('Error fetching leaving data:', error);
       setError(error.message);
@@ -123,19 +114,9 @@ const Leaving = () => {
 
   const handleActionClick = (item) => {
     setSelectedActionItem(item);
+    const row = item.originalRow || {};
 
-    // Pre-fill Logic from originalRow
-    // Indices (0-based from row array):
-    // AC=28, AD=29 (Resignation)
-    // AG=32, AH=33 (Approval)
-    // AK=36 (Handover - Date)
-    // AM=38 (Assets List)
-    // AP=41, AQ=42 (Final Exit)
-
-    const row = item.originalRow || [];
-
-    // Parse Asset Checkbox List
-    const assetString = row[38] || ''; // AM
+    const assetString = item.ex3ExitChecklist || row.ex3_exit_checklist || (Array.isArray(row) ? row[38] : '') || '';
     const currentAssets = {
       idCard: false,
       visitingCard: false,
@@ -149,9 +130,8 @@ const Leaving = () => {
       businessWhatsapp: false,
       officialEmail: false,
       callForwarding: false
-};
+    };
 
-    // Mapping Labels back to Keys
     const assetLabelsToKeys = {
       'ID CARD': 'idCard',
       'VISITING CARD': 'visitingCard',
@@ -182,20 +162,24 @@ const Leaving = () => {
       });
     }
 
+    const ex1Actual = item.ex1Actual || row.ex1_actual || (Array.isArray(row) ? row[28] : '');
+    const ex1Status = item.ex1Status || row.ex1_status || (Array.isArray(row) ? row[29] : '');
+    const ex2Actual = item.ex2Actual || row.ex2_actual || (Array.isArray(row) ? row[32] : '');
+    const ex2Status = item.ex2Status || row.ex2_status || (Array.isArray(row) ? row[33] : '');
+    const ex3Actual = item.ex3Actual || row.ex3_actual || (Array.isArray(row) ? row[36] : '');
+    const ex4Actual = item.ex4Actual || row.ex4_actual || (Array.isArray(row) ? row[41] : '');
+    const ex4Status = item.ex4Status || row.ex4_status || (Array.isArray(row) ? row[42] : '');
+
     setActionFormData({
-      resignationLetterReceived: !!row[28] || !!row[29],
-      resignationStatus: row[29] || '',
-
-      approval: !!row[32] || !!row[33],
-      approvalStatus: row[33] || '',
-
-      handoverOfAssets: !!row[36] || !!assetString,
-
+      resignationLetterReceived: !!ex1Actual || !!ex1Status,
+      resignationStatus: ex1Status || '',
+      approval: !!ex2Actual || !!ex2Status,
+      approvalStatus: ex2Status || '',
+      handoverOfAssets: !!ex3Actual || !!assetString,
       assetChecklist: currentAssets,
       callForwardNumber,
-
-      finalExitInterview: !!row[41] || !!row[42],
-      finalExitStatus: row[42] || ''
+      finalExitInterview: !!ex4Actual || !!ex4Status,
+      finalExitStatus: ex4Status || ''
     });
     setShowActionModal(true);
   };
@@ -227,21 +211,16 @@ const Leaving = () => {
 
   const handleActionSubmit = async (e) => {
     e.preventDefault();
+    if (!selectedActionItem) return;
     const toastId = toast.loading('Updating action details...');
 
     try {
-      // 1. Calculate Row Index (Row 1 is index 1 in Sheets, data starts at index 7 of slice => Row 8)
-      // item.id is index from slice(7), so 0 means Row 8.
-      const rowIndex = selectedActionItem.id + 8;
-
-      // Date Format: MM/DD/YYYY (e.g., 02/05/2026)
       const today = new Date();
       const mm = String(today.getMonth() + 1).padStart(2, '0');
       const dd = String(today.getDate()).padStart(2, '0');
       const yyyy = today.getFullYear();
-      const submissionDate = `${mm}/${dd}/${yyyy}`;
+      const submissionDate = `${dd}/${mm}/${yyyy}`;
 
-      // Map Asset Keys to Labels
       const assetLabels = {
         idCard: 'ID CARD',
         visitingCard: 'VISITING CARD',
@@ -265,91 +244,35 @@ const Leaving = () => {
         );
 
       const selectedAssetsString = selectedAssetsList.join(',');
-
-      // Check if ALL assets are checked
       const allAssetsChecked = selectedAssetsList.length === Object.keys(actionFormData.assetChecklist).length;
 
-      // Conditional Date Logic
-      // 1. Resignation Letter Received: Insert Date ONLY if Status == 'Done'
       const resignationDate = (actionFormData.resignationLetterReceived && actionFormData.resignationStatus === 'Done')
-        ? submissionDate
-        : '';
-
-      // 2. Final Exit Interview: Insert Date ONLY if Status == 'Done'
+        ? submissionDate : '';
       const finalExitDate = (actionFormData.finalExitInterview && actionFormData.finalExitStatus === 'Done')
-        ? submissionDate
-        : '';
-
-      // 3. Handover of Assets: Insert Date ONLY if ALL assets checked
+        ? submissionDate : '';
       const handoverDate = (actionFormData.handoverOfAssets && allAssetsChecked)
-        ? submissionDate
-        : '';
-
-      // 4. Approval: Insert Date ONLY if ALL assets checked AND Status == 'Done'
+        ? submissionDate : '';
       const approvalDate = (actionFormData.approval && allAssetsChecked && actionFormData.approvalStatus === 'Done')
-        ? submissionDate
-        : '';
+        ? submissionDate : '';
 
-      // Prepare distinct updates for 'updateCell' to avoid overwriting formulas in other columns
-      // We rely on 'updateCell' to surgically update only these columns.
-      // Columns (1-based):
-      // AC=29, AD=30
-      // AG=33, AH=34
-      // AK=37
-      // AM=39
-      // AP=42, AQ=43
+      const payload = {
+        ex1_actual: resignationDate,
+        ex1_status: actionFormData.resignationStatus,
+        ex2_actual: approvalDate,
+        ex2_status: actionFormData.approvalStatus,
+        ex3_actual: handoverDate,
+        ex3_exit_checklist: selectedAssetsString,
+        ex4_actual: finalExitDate,
+        ex4_status: actionFormData.finalExitStatus,
+        updated_at: new Date().toISOString()
+      };
 
-      const updates = [
-        // AC (29) - Resignation Letter Received
-        { columnIndex: 29, value: resignationDate },
-        // AD (30) - Resignation Status
-        { columnIndex: 30, value: actionFormData.resignationStatus },
+      const { error: updateErr } = await supabase
+        .from('leaving_fms')
+        .update(payload)
+        .eq('id', selectedActionItem.id);
 
-        // AG (33) - Approval
-        { columnIndex: 33, value: approvalDate },
-        // AH (34) - Approval Status
-        { columnIndex: 34, value: actionFormData.approvalStatus },
-
-        // AK (37) - Handover Of Assets
-        { columnIndex: 37, value: handoverDate },
-
-        // AM (39) - Asset Checkboxes
-        { columnIndex: 39, value: selectedAssetsString },
-
-        // AP (42) - Final Exit Interview
-        { columnIndex: 42, value: finalExitDate },
-        // AQ (43) - Final Exit Status
-        { columnIndex: 43, value: actionFormData.finalExitStatus }
-      ];
-
-      // Filter out updates where value is undefined (optional, but good practice, though we control values above)
-      // Construct Promise array
-      const updatePromises = updates.map(update => {
-        // We submit even empty strings to 'clear' the cell if unticked/empty
-        return fetch(import.meta.env.VITE_LEAVING_SHEET_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: new URLSearchParams({
-            action: 'updateCell',
-            sheetName: 'FMS',
-            rowIndex: rowIndex,
-            columnIndex: update.columnIndex,
-            value: update.value
-          })
-        }).then(res => res.json());
-      });
-
-      // Execute all updates
-      const results = await Promise.all(updatePromises);
-
-      // Check for failures
-      const errors = results.filter(r => !r.success);
-      if (errors.length > 0) {
-        console.error('Some updates failed:', errors);
-        throw new Error(`${errors.length} column(s) failed to update.`);
-      }
+      if (updateErr) throw updateErr;
 
       toast.success('Action checklist updated successfully!', { id: toastId });
       setShowActionModal(false);

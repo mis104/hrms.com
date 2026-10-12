@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronRight, Download } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronRight, Download, Share2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-
 import toast from 'react-hot-toast';
+import { fetchLeaveRequests, createLeaveRequest, supabase } from '../services/supabaseService';
+import { triggerLeaveRequestNotification } from '../services/whatsappService';
 
-const LEAVE_API_URL = import.meta.env.VITE_LEAVE_REQUEST_SHEET_URL;
-const LEAVE_SHEET_NAME = 'FMS';
-const LEAVE_DATA_START_INDEX = 6;
-const LEAVE_PAGE_SIZE = 25;
-const LEAVE_PROCESS_CHUNK_SIZE = 500;
+const LEAVE_PAGE_SIZE = 50;
+
 
 const LeaveRequest = () => {
   const employeeId = localStorage.getItem("employeeId");
@@ -56,19 +55,7 @@ const LeaveRequest = () => {
     'Plants',
     'Directors'
   ];
-  const getJoiningFetchUrl = () =>
-    `${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS`;
-
-  const getColumnIndex = (headers, names, fallbackIndex) => {
-    const normalizedNames = names.map((name) => name.toLowerCase());
-    const index = headers.findIndex((header) => {
-      const value = header?.toString().trim().toLowerCase();
-      return value && normalizedNames.some((name) => value === name || value.includes(name));
-    });
-    return index !== -1 ? index : fallbackIndex;
-  };
-
-  // Fetch employee data including designation
+  // Fetch employee data including designation from Supabase joining_fms table
   const fetchEmployeeData = async () => {
     if (employeeDetailsLoadedRef.current || employeeFetchInProgressRef.current) {
       return;
@@ -77,52 +64,27 @@ const LeaveRequest = () => {
     try {
       employeeFetchInProgressRef.current = true;
       setEmployeeDetailsLoading(true);
-      const response = await fetch(getJoiningFetchUrl());
+      const userName = user.Name || user.name || '';
+      if (!userName) return;
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      const { data, error } = await supabase
+        .from('joining_fms')
+        .select('employee_code, candidate_name, name_as_per_aadhar, designation, joining_place')
+        .or(`candidate_name.ilike.%${userName}%,name_as_per_aadhar.ilike.%${userName}%`)
+        .limit(1);
 
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch employee data');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      const headers = rawData[6] || [];
-      const idIndex = getColumnIndex(headers, ['Joining ID', 'Indent Number', 'ID'], 5);
-      const nameIndex = getColumnIndex(headers, ['Candidate Name', 'Name As Per Aadhar', 'Employee Name'], 10);
-      const designationIndex = getColumnIndex(headers, ['Designation'], 14);
-      const jobLocationIndex = getColumnIndex(headers, ['Joining Place', 'Job Location', 'Location'], 13);
-      const departmentIndex = getColumnIndex(headers, ['Department'], 2);
-
-      const employeeRow = rawData.slice(7).find(row =>
-        row[nameIndex]?.toString().trim().toLowerCase() === user.Name?.toString().trim().toLowerCase()
-      );
-
-      if (employeeRow) {
-        const employeeId = employeeRow[idIndex] || '';
-        const designation = employeeRow[designationIndex] || '';
-        const jobLocation = employeeRow[jobLocationIndex] || '';
-        const department = employeeRow[departmentIndex] || '';
-
+      if (!error && data && data.length > 0) {
+        const emp = data[0];
         setFormData(prev => ({
           ...prev,
-          employeeId: employeeId,
-          designation: designation,
-          department: department,
-          jobLocation: jobLocation
+          employeeId: emp.employee_code || prev.employeeId,
+          designation: emp.designation || prev.designation,
+          jobLocation: emp.joining_place || prev.jobLocation
         }));
         employeeDetailsLoadedRef.current = true;
       }
     } catch (error) {
-      console.error('Error fetching employee data:', error);
+      console.error('Error fetching employee data from Supabase:', error);
     } finally {
       employeeFetchInProgressRef.current = false;
       setEmployeeDetailsLoading(false);
@@ -185,37 +147,46 @@ const LeaveRequest = () => {
     if (dateValue instanceof Date && !isNaN(dateValue.getTime())) {
       const day = String(dateValue.getDate()).padStart(2, '0');
       const month = String(dateValue.getMonth() + 1).padStart(2, '0');
-      return `${day}/${month}/${dateValue.getFullYear()}`;
+      return `${day}-${month}-${dateValue.getFullYear()}`;
     }
 
     const rawValue = dateValue.toString().trim();
     if (!rawValue) return '';
 
-    // Handle full ISO datetime strings (e.g. "2026-05-23T18:30:00.000Z") by parsing as Date first
-    if (rawValue.includes('T') && rawValue.includes(':')) {
+    // If Excel serial number
+    if (!isNaN(Number(rawValue)) && Number(rawValue) > 20000 && Number(rawValue) < 60000) {
+      const jsDate = new Date(Math.round((Number(rawValue) - 25569) * 86400 * 1000));
+      if (!isNaN(jsDate.getTime())) {
+        const d = String(jsDate.getUTCDate()).padStart(2, '0');
+        const m = String(jsDate.getUTCMonth() + 1).padStart(2, '0');
+        const y = jsDate.getUTCFullYear();
+        return `${d}-${m}-${y}`;
+      }
+    }
+
+    // Handle full ISO datetime strings
+    if (rawValue.includes('T') || rawValue.includes('Z')) {
       const parsedDate = new Date(rawValue);
       if (!isNaN(parsedDate.getTime())) {
         const day = String(parsedDate.getDate()).padStart(2, '0');
         const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
-        return `${day}/${month}/${parsedDate.getFullYear()}`;
+        return `${day}-${month}-${parsedDate.getFullYear()}`;
       }
     }
 
-    const datePart = rawValue.split(/[ T]/)[0];
-    const isoMatch = datePart.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    // Match YYYY-MM-DD
+    const isoMatch = rawValue.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if (isoMatch) {
-      return `${isoMatch[3].padStart(2, '0')}/${isoMatch[2].padStart(2, '0')}/${isoMatch[1]}`;
+      return `${isoMatch[3].padStart(2, '0')}-${isoMatch[2].padStart(2, '0')}-${isoMatch[1]}`;
     }
 
-    if (datePart.includes('/')) {
-      const [first, second, year] = datePart.split('/');
-      if (first && second && year) {
-        const firstNumber = Number(first);
-        const secondNumber = Number(second);
-        const day = secondNumber > 12 && firstNumber <= 12 ? second : first;
-        const month = secondNumber > 12 && firstNumber <= 12 ? first : second;
-        return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
-      }
+    // Match DD-MM-YYYY or DD/MM/YYYY
+    const dmyMatch = rawValue.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmyMatch) {
+      const day = String(parseInt(dmyMatch[1], 10)).padStart(2, '0');
+      const month = String(parseInt(dmyMatch[2], 10)).padStart(2, '0');
+      const year = dmyMatch[3];
+      return `${day}-${month}-${year}`;
     }
 
     const parsedDate = new Date(rawValue);
@@ -223,16 +194,17 @@ const LeaveRequest = () => {
 
     const day = String(parsedDate.getDate()).padStart(2, '0');
     const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
-    return `${day}/${month}/${parsedDate.getFullYear()}`;
+    return `${day}-${month}-${parsedDate.getFullYear()}`;
   };
 
   const parseSheetDate = (dateValue) => {
     const formattedDate = formatDateToDDMMYYYY(dateValue);
-    if (!formattedDate || !formattedDate.includes('/')) return null;
-    const [day, month, year] = formattedDate.split('/').map(Number);
+    if (!formattedDate || !formattedDate.includes('-')) return null;
+    const [day, month, year] = formattedDate.split('-').map(Number);
     const date = new Date(year, month - 1, day);
     return isNaN(date.getTime()) ? null : date;
   };
+
 
   const calculateDays = (startDateStr, endDateStr) => {
     const startDate = parseSheetDate(startDateStr);
@@ -269,9 +241,6 @@ const LeaveRequest = () => {
     if (!date) return false;
     return date.getFullYear() === parseInt(year);
   };
-
-  const getLeaveFetchUrl = () =>
-    `${LEAVE_API_URL}?sheet=${encodeURIComponent(LEAVE_SHEET_NAME)}&action=fetch`;
 
   const formatSheetTimestamp = () => {
     const now = new Date();
@@ -372,28 +341,52 @@ const LeaveRequest = () => {
     setError(null);
 
     try {
-      const response = await fetch(
-        getLeaveFetchUrl()
-      );
+      const res = await fetchLeaveRequests({
+        limit: 500,
+        requestedBy: isAdmin ? (requestedByFilter === 'all' ? null : requestedByFilter) : (user.Name || null),
+      });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      if (!res.success) {
+        throw new Error(res.error || 'Failed to fetch leave data');
       }
 
-      const result = await response.json();
+      const processedData = (res.data || []).map((row, index) => {
+        let displayDays = row.total_leaves ? `${row.total_leaves} ${row.total_leaves === 1 ? 'day' : 'days'}` : '';
+        if (!displayDays && row.leave_from_date && row.leave_to_date) {
+          displayDays = formatLeaveDays(row.leave_from_date, row.leave_to_date);
+        }
 
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch leave data');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      const dataRows = rawData.length > LEAVE_DATA_START_INDEX ? rawData.slice(LEAVE_DATA_START_INDEX) : [];
-      const processedData = processLeaveRows(dataRows);
+        return {
+          id: row.id,
+          timestamp: row.timestamp || row.created_at,
+          leaveRequestId: row.leave_request_no || `LR-${index + 1}`,
+          requestedBy: row.requested_by || '',
+          department: row.department || '',
+          totalLeaves: displayDays,
+          jobLocation: row.job_location || '',
+          leaveFromDate: row.leave_from_date || '',
+          leaveToDate: row.leave_to_date || '',
+          leaveReason: row.leave_reason || '',
+          remark: row.remark || '',
+          imageUrl: row.image_url || '',
+          approvalPlanned: row.approval_planned || '',
+          approvalActual: row.approval_actual || '',
+          approvalDelay: row.approval_delay || '',
+          approvedBy: row.approved_by || '',
+          approvalStatus: row.approval_status || 'Pending',
+          approvalRemarks: row.approval_remarks || '',
+          serialNo: row.leave_request_no || `LR-${index + 1}`,
+          employeeId: row.leave_request_no || '',
+          employeeName: row.requested_by || '',
+          startDate: row.leave_from_date || '',
+          endDate: row.leave_to_date || '',
+          reason: row.leave_reason || '',
+          days: displayDays,
+          status: row.approval_status || 'Pending',
+          approvalPending: (row.approval_status || 'Pending').toLowerCase() === 'pending',
+          appliedDate: row.timestamp || row.created_at,
+        };
+      });
 
       setLeavesData(processedData);
 
@@ -409,7 +402,7 @@ const LeaveRequest = () => {
 
   useEffect(() => {
     fetchLeaveData();
-  }, []);
+  }, [requestedByFilter]);
 
   useEffect(() => {
     if (showModal) {
@@ -427,73 +420,84 @@ const LeaveRequest = () => {
 
     try {
       setSubmitting(true);
-      const dataResponse = await fetch(getLeaveFetchUrl());
-      const dataResult = await dataResponse.json();
-      const existingRows = Array.isArray(dataResult.data) ? dataResult.data : [];
-      const formattedTimestamp = formatSheetTimestamp();
-      const leaveRequestNo = getNextLeaveRequestNo(existingRows);
       const halfDayRemark = formData.halfDay ? `${formData.halfDay}${formData.remark ? ` - ${formData.remark}` : ''}` : formData.remark;
-
       const rawDays = formData.halfDay ? 0.5 : calculateDays(formData.fromDate, formData.toDate);
-      const rowData = [
-        formattedTimestamp,
-        leaveRequestNo,
-        formData.employeeName,
-        formData.department || formData.designation,
-        rawDays || '',
-        formData.jobLocation || '',
-        formatDOB(formData.fromDate),
-        formatDOB(formData.toDate),
-        formData.reason,
-        halfDayRemark,
-        formData.imageUrl,
-      ];
 
-      const response = await fetch(LEAVE_API_URL, {
-        method: 'POST',
-        body: new URLSearchParams({
-          sheetName: LEAVE_SHEET_NAME,
-          action: 'insert',
-          rowData: JSON.stringify(rowData),
-        }),
+      const res = await createLeaveRequest({
+        requested_by: formData.employeeName,
+        department: formData.department || formData.designation,
+        total_leaves: rawDays || 1,
+        job_location: formData.jobLocation || '',
+        leave_from_date: formatDOB(formData.fromDate),
+        leave_to_date: formatDOB(formData.toDate),
+        leave_reason: formData.reason,
+        remark: halfDayRemark,
+        image_url: formData.imageUrl || null,
       });
 
-      const result = await response.json();
-
-      if (result.success) {
+      if (res.success && res.data) {
+        const created = res.data;
         const optimisticLeave = {
-          id: leavesData.length + 1,
-          timestamp: formattedTimestamp,
-          leaveRequestId: leaveRequestNo,
-          requestedBy: formData.employeeName,
-          department: formData.department || formData.designation,
-          totalLeaves: formatLeaveDays(formData.fromDate, formData.toDate, formData.halfDay),
-          jobLocation: formData.jobLocation || '',
-          leaveFromDate: formatDOB(formData.fromDate),
-          leaveToDate: formatDOB(formData.toDate),
-          leaveReason: formData.reason,
-          remark: halfDayRemark,
-          imageUrl: formData.imageUrl,
-          approvalPlanned: '',
-          approvalActual: '',
-          approvalDelay: '',
-          approvedBy: '',
+          id: created.id,
+          timestamp: created.timestamp || new Date().toISOString(),
+          leaveRequestId: created.leave_request_no,
+          requestedBy: created.requested_by,
+          department: created.department,
+          totalLeaves: `${rawDays} ${rawDays === 1 ? 'day' : 'days'}`,
+          jobLocation: created.job_location,
+          leaveFromDate: created.leave_from_date,
+          leaveToDate: created.leave_to_date,
+          leaveReason: created.leave_reason,
+          remark: created.remark,
+          imageUrl: created.image_url,
           approvalStatus: 'Pending',
-          approvalRemarks: '',
-          serialNo: leaveRequestNo,
-          employeeId: leaveRequestNo,
-          employeeName: formData.employeeName,
-          startDate: formatDOB(formData.fromDate),
-          endDate: formatDOB(formData.toDate),
-          reason: formData.reason,
-          days: formatLeaveDays(formData.fromDate, formData.toDate, formData.halfDay),
+          serialNo: created.leave_request_no,
+          employeeName: created.requested_by,
+          startDate: created.leave_from_date,
+          endDate: created.leave_to_date,
+          reason: created.leave_reason,
+          days: `${rawDays} ${rawDays === 1 ? 'day' : 'days'}`,
           status: 'Pending',
           approvalPending: true,
-          appliedDate: formattedTimestamp,
+          appliedDate: created.timestamp,
         };
 
         setLeavesData((prev) => [optimisticLeave, ...prev]);
         toast.success('Leave Request submitted successfully!');
+
+        // Generate WhatsApp 1-click Approval Link
+        const appBaseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        const shareUrl = `${appBaseUrl}/quick-leave?lr=${created.leave_request_no}&id=${created.id}`;
+        
+        // Auto-Trigger WhatsApp alert via Maytapi Gateway
+        triggerLeaveRequestNotification({
+          employeeName: formData.employeeName,
+          employeeId: employeeId || 'EMP',
+          designation: formData.designation || formData.department || 'Staff',
+          jobLocation: formData.jobLocation || 'Plant Location',
+          department: formData.department || formData.designation,
+          leaveType: formData.reason || 'Leave Application',
+          fromDate: formatDOB(formData.fromDate),
+          toDate: formatDOB(formData.toDate),
+          days: `${rawDays} ${rawDays === 1 ? 'day' : 'days'}`,
+          reason: formData.reason || 'Personal work',
+          remark: halfDayRemark || 'Submitted for approval',
+          lrNo: created.leave_request_no,
+          approvalLink: shareUrl,
+        });
+
+        const whatsappMsg = `*Leave Request Application*\n\n` +
+          `*LR No:* ${created.leave_request_no}\n` +
+          `*Employee:* ${formData.employeeName}\n` +
+          `*Department:* ${formData.department || formData.designation}\n` +
+          `*Dates:* ${formatDOB(formData.fromDate)} to ${formatDOB(formData.toDate)} (${rawDays} Days)\n` +
+          `*Reason:* ${formData.reason}\n\n` +
+          `👉 *1-Click Manager Approval Link:*\n${shareUrl}`;
+
+        const openWA = window.confirm(`Leave request submitted successfully (${created.leave_request_no})!\n\nDo you want to send the 1-click Approval Link to Manager on WhatsApp?`);
+        if (openWA) {
+          window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappMsg)}`, '_blank');
+        }
 
         setFormData({
           employeeId: employeeId,
@@ -504,14 +508,14 @@ const LeaveRequest = () => {
           fromDate: '',
           toDate: '',
           halfDay: '',
-    reason: '',
+          reason: '',
           remark: '',
           imageUrl: ''
         });
         setShowModal(false);
-        window.setTimeout(fetchLeaveData, 1200);
+        fetchLeaveData();
       } else {
-        toast.error('Failed to insert: ' + (result.error || 'Unknown error'));
+        toast.error('Failed to submit: ' + (res.error || 'Unknown error'));
       }
     } catch (error) {
       console.error('Insert error:', error);
@@ -744,388 +748,295 @@ const LeaveRequest = () => {
     XLSX.writeFile(workbook, `Leave_Requests_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    if (showModal) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'unset';
+    }
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, [showModal]);
+
   return (
     <div className="page-content min-h-screen bg-[#f4f7fb] px-4 pb-24 pt-5 text-slate-950 sm:p-6">
       <div className="w-full space-y-5 lg:max-w-6xl">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Employee Leave</p>
-          <h1 className="text-2xl font-black text-slate-950">Leave Request</h1>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row w-full sm:w-auto">
-          {isAdmin && (
-            <button
-              onClick={handleDownloadExcel}
-              className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-950 shadow-[0_14px_30px_rgba(15,23,42,0.05)] hover:bg-slate-50 sm:w-auto"
-            >
-              <Download size={16} className="mr-2" />
-              Download Excel
-            </button>
-          )}
-          <button
-            onClick={() => setShowModal(true)}
-            className="inline-flex h-12 w-full items-center justify-center rounded-2xl border border-transparent bg-slate-950 px-4 text-sm font-black text-white shadow-[0_14px_30px_rgba(15,23,42,0.16)] hover:bg-slate-800 sm:w-auto"
-          >
-            <Plus size={16} className="mr-2" />
-            New Leave Request
-          </button>
-        </div>
-      </div>
-
-      <section className="relative overflow-hidden rounded-[28px] bg-slate-950 p-4 text-white shadow-[0_24px_48px_rgba(15,23,42,0.24)]">
-        <span className="pointer-events-none absolute -right-20 -top-16 h-44 w-44 rounded-full bg-indigo-500/20 blur-2xl" />
-        <span className="pointer-events-none absolute -bottom-20 left-10 h-44 w-44 rounded-full bg-cyan-400/10 blur-2xl" />
-        <div className="relative z-10 flex items-start justify-between gap-3">
+        {/* Header */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Leave Overview</p>
-            <h2 className="mt-1 text-xl font-black leading-tight">{user.Name || 'My'} Leave Balance</h2>
-            <p className="mt-1 text-xs font-semibold text-slate-300">Track requests, approvals and pending days</p>
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Employee Self Service</p>
+            <h1 className="text-2xl font-black text-slate-950">Leave Request & Application</h1>
           </div>
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-black text-white ring-1 ring-white/15">
-            <Sparkles size={12} />
-            Live
-          </span>
-        </div>
-        <div className="relative z-10 mt-5 grid grid-cols-4 gap-2">
-          <div className="rounded-2xl bg-white/10 p-3 ring-1 ring-white/10">
-            <p className="text-lg font-black">{formatLeaveCount(leaveDaySummary.total)}</p>
-            <p className="text-[9px] font-black uppercase text-slate-400">Total</p>
-          </div>
-          <div className="rounded-2xl bg-emerald-400/10 p-3 ring-1 ring-white/10">
-            <p className="text-lg font-black text-emerald-200">{formatLeaveCount(leaveDaySummary.approved)}</p>
-            <p className="text-[9px] font-black uppercase text-slate-400">Approved</p>
-          </div>
-          <div className="rounded-2xl bg-amber-400/10 p-3 ring-1 ring-white/10">
-            <p className="text-lg font-black text-amber-200">{formatLeaveCount(leaveDaySummary.pending)}</p>
-            <p className="text-[9px] font-black uppercase text-slate-400">Pending</p>
-          </div>
-          <div className="rounded-2xl bg-rose-400/10 p-3 ring-1 ring-white/10">
-            <p className="text-lg font-black text-rose-200">{formatLeaveCount(leaveDaySummary.rejected)}</p>
-            <p className="text-[9px] font-black uppercase text-slate-400">Rejected</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Month and Year Filter */}
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/95 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.07)] sm:rounded-[24px]">
-        <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-2xl bg-slate-50 text-slate-500 ring-1 ring-slate-200 sm:hidden">
-          <Filter size={18} />
-        </div>
-        <div className="hidden items-center gap-2 sm:mb-3 sm:flex">
-          <Filter size={18} className="text-slate-500" />
-          <p className="text-sm font-black text-slate-700">Filters</p>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-3 sm:items-end">
-          <div className="min-w-0">
-            <label htmlFor="monthFilter" className="block text-sm font-black text-slate-700">
-              Filter by Month:
-            </label>
-            <select
-              id="monthFilter"
-              value={selectedMonth}
-              onChange={handleMonthChange}
-              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-800 outline-none focus:border-slate-900 focus:bg-white"
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <button
+                onClick={handleDownloadExcel}
+                className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-xs font-black text-slate-900 shadow-sm hover:bg-slate-50 transition"
+              >
+                <Download size={14} className="mr-2 text-slate-600" />
+                Download Excel
+              </button>
+            )}
+            <button
+              onClick={() => setShowModal(true)}
+              className="inline-flex h-10 items-center justify-center rounded-xl bg-slate-950 px-5 text-xs font-black text-white shadow-md hover:bg-slate-800 transition"
             >
-              {monthOptions.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="min-w-0">
-            <label htmlFor="yearFilter" className="block text-sm font-black text-slate-700">
-              Year:
-            </label>
-            <select
-              id="yearFilter"
-              value={selectedYear}
-              onChange={handleYearChange}
-              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-800 outline-none focus:border-slate-900 focus:bg-white"
-            >
-              {yearOptions.map(year => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="min-w-0">
-            <label htmlFor="requestedByFilter" className="block text-sm font-black text-slate-700">
-              Requested By:
-            </label>
-            <select
-              id="requestedByFilter"
-              value={requestedByFilter}
-              onChange={handleRequestedByChange}
-              className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-800 outline-none focus:border-slate-900 focus:bg-white"
-            >
-              {isAdmin && <option value="all">All</option>}
-              {requestedByOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
+              <Plus size={15} className="mr-2" />
+              Apply Leave
+            </button>
           </div>
         </div>
-      </div>
 
-      {/* Leave Balance Cards */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {leaveSummaryCards.map((card) => {
-          const SummaryIcon = card.icon;
+        {/* 1. TOP SUMMARY STATS */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+            <p className="text-[10px] font-black uppercase text-slate-400">Total Leave Days</p>
+            <h3 className="mt-1 text-2xl font-black text-slate-900">{formatLeaveCount(leaveDaySummary.total)}</h3>
+            <p className="text-[10px] font-semibold text-slate-500">All applied leaves</p>
+          </div>
 
-          return (
-            <div key={card.label} className="rounded-[22px] border border-slate-200/80 bg-white p-4 shadow-[0_14px_30px_rgba(15,23,42,0.07)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wide text-slate-400">{card.label}</p>
-                  <h3 className="mt-1 text-2xl font-black text-slate-950">{formatLeaveCount(card.value)}</h3>
-                  <p className="text-[10px] font-bold text-slate-500">{card.subtext}</p>
-                </div>
-                <div className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${card.bgClass}`}>
-                  <SummaryIcon size={24} className={card.iconClass} />
-                </div>
+          <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/50 p-4 shadow-sm">
+            <p className="text-[10px] font-black uppercase text-emerald-600">Approved Days</p>
+            <h3 className="mt-1 text-2xl font-black text-emerald-800">{formatLeaveCount(leaveDaySummary.approved)}</h3>
+            <p className="text-[10px] font-semibold text-emerald-600">Approved by manager</p>
+          </div>
+
+          <div className="rounded-2xl border border-amber-200/80 bg-amber-50/50 p-4 shadow-sm">
+            <p className="text-[10px] font-black uppercase text-amber-600">Pending Days</p>
+            <h3 className="mt-1 text-2xl font-black text-amber-800">{formatLeaveCount(leaveDaySummary.pending)}</h3>
+            <p className="text-[10px] font-semibold text-amber-600">Awaiting approval</p>
+          </div>
+
+          <div className="rounded-2xl border border-rose-200/80 bg-rose-50/50 p-4 shadow-sm">
+            <p className="text-[10px] font-black uppercase text-rose-600">Rejected Days</p>
+            <h3 className="mt-1 text-2xl font-black text-rose-800">{formatLeaveCount(leaveDaySummary.rejected)}</h3>
+            <p className="text-[10px] font-semibold text-rose-600">Not approved</p>
+          </div>
+        </div>
+
+        {/* 2. FILTER BAR */}
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <Filter size={15} className="text-slate-500" />
+            <p className="text-xs font-black uppercase tracking-wider text-slate-700">Filter History</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">Filter by Month</label>
+              <select
+                value={selectedMonth}
+                onChange={handleMonthChange}
+                className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
+              >
+                {monthOptions.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">Year</label>
+              <select
+                value={selectedYear}
+                onChange={handleYearChange}
+                className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
+              >
+                {yearOptions.map(year => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">Requested By</label>
+              <select
+                value={requestedByFilter}
+                onChange={handleRequestedByChange}
+                className="w-full h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 focus:bg-white focus:outline-none"
+              >
+                {isAdmin && <option value="all">All Employees</option>}
+                {requestedByOptions.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. LEAVE REQUESTS HISTORY TABLE */}
+        <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
+            <h2 className="text-base font-black text-slate-900">Leave Requests History</h2>
+            <span className="text-xs text-slate-500 font-bold">
+              Showing {Math.min(visibleLimit, filteredLeaveRequests.length)} of {filteredLeaveRequests.length} records
+            </span>
+          </div>
+
+          <div className="p-4">
+            {tableLoading ? (
+              <div className="flex justify-center py-10">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900"></div>
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Leave Requests */}
-      <div className="rounded-[26px] border border-slate-200/80 bg-white shadow-[0_18px_42px_rgba(15,23,42,0.08)]">
-        <div className="p-4 sm:p-6">
-          <h2 className="text-base font-black text-slate-950 mb-4">My Leave Requests</h2>
-          {tableLoading ? (
-            <div className="flex justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-navy"></div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 sm:block sm:space-y-4">
-              {filteredLeaveRequests.length > 0 ? (
-                displayedLeaveRequests.map((request) => {
+            ) : filteredLeaveRequests.length > 0 ? (
+              <div className="space-y-3">
+                {displayedLeaveRequests.map((request) => {
                   const statusMeta = getStatusMeta(request.status);
                   const StatusIcon = statusMeta.icon;
-                  const isRejected = statusMeta.label === 'Rejected';
 
                   return (
-                    <React.Fragment key={request.leaveRequestId || request.id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedLeaveRequest(request)}
-                      className={`min-h-[142px] rounded-[22px] border p-3 text-left shadow-[0_10px_24px_rgba(15,23,42,0.04)] sm:hidden ${statusMeta.cardClass}`}
+                    <article
+                      key={request.leaveRequestId || request.id}
+                      className={`rounded-xl border p-4 shadow-sm transition ${statusMeta.cardClass}`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <h3 className="truncate text-sm font-black text-slate-950">{request.leaveRequestId || 'Leave'}</h3>
-                          <p className="mt-1 text-[11px] font-bold leading-snug text-slate-600">
-                            {formatDOB(request.startDate)} to {formatDOB(request.endDate)}
-                          </p>
-                        </div>
-                        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-2xl border bg-white/70 ${statusMeta.badgeClass}`}>
-                          <StatusIcon size={15} className={statusMeta.iconClass} />
-                        </span>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <div className="rounded-2xl bg-white/70 p-2">
-                          <p className="text-[9px] font-black uppercase text-slate-400">Days</p>
-                          <p className="mt-0.5 truncate text-xs font-black text-slate-900">{request.days || '-'}</p>
-                        </div>
-                        <div className="rounded-2xl bg-white/70 p-2">
-                          <p className="text-[9px] font-black uppercase text-slate-400">Dept</p>
-                          <p className="mt-0.5 truncate text-xs font-black text-slate-900">{request.department || '-'}</p>
-                        </div>
-                      </div>
-                      <span className="mt-3 inline-flex items-center gap-1 text-[11px] font-black text-slate-700">
-                        View details
-                        <ChevronRight size={13} />
-                      </span>
-                    </button>
-                    <article className={`hidden rounded-[24px] border p-4 shadow-[0_10px_24px_rgba(15,23,42,0.04)] sm:block ${statusMeta.cardClass}`}>
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="text-base font-black text-slate-950">{request.leaveRequestId || 'Leave Request'}</h3>
-                            <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${statusMeta.badgeClass}`}>
-                              <StatusIcon size={14} className={statusMeta.iconClass} />
+                            <span className="font-black text-sm text-slate-950">{request.leaveRequestId || 'LR'}</span>
+                            <span className="font-bold text-xs text-slate-700">• {request.requestedBy || request.employeeName}</span>
+                            <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-bold ${statusMeta.badgeClass}`}>
+                              <StatusIcon size={12} className={statusMeta.iconClass} />
                               {statusMeta.label}
                             </span>
                           </div>
-                          <p className="mt-1 text-sm text-gray-600 break-words">
-                            {formatDOB(request.startDate)} to {formatDOB(request.endDate)} | {request.days || '-'}
+                          <p className="mt-1 text-xs text-slate-600 font-semibold">
+                            📅 {formatDOB(request.startDate)} to {formatDOB(request.endDate)} &nbsp;|&nbsp; ⏳ {request.days || '-'} &nbsp;|&nbsp; 🏢 {request.department} ({request.jobLocation || 'N/A'})
                           </p>
                         </div>
 
-                        {request.imageUrl && (
-                          <a
-                            href={request.imageUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex shrink-0 items-center justify-center gap-1 rounded-2xl border border-indigo-200 bg-white px-3 py-2 text-sm font-black text-indigo-700 hover:bg-indigo-50"
+                        <div className="flex items-center gap-2 shrink-0">
+                          {request.imageUrl && (
+                            <a
+                              href={request.imageUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50"
+                            >
+                              Image
+                              <ChevronRight size={13} />
+                            </a>
+                          )}
+
+                          <button
+                            title="Share on WhatsApp"
+                            onClick={() => {
+                              const shareUrl = `${window.location.origin}/quick-leave?lr=${request.leaveRequestId}&id=${request.id}`;
+                              const text = `*Leave Request Approval Needed*\n\n` +
+                                `*LR No:* ${request.leaveRequestId}\n` +
+                                `*Employee:* ${request.requestedBy || request.employeeName}\n` +
+                                `*Dates:* ${formatDOB(request.startDate)} to ${formatDOB(request.endDate)} (${request.days})\n` +
+                                `*Reason:* ${request.reason || '-'}\n\n` +
+                                `👉 *1-Click Approval Link:* ${shareUrl}`;
+                              window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+                            }}
+                            className="p-2 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl border border-emerald-200 transition"
                           >
-                            View Image
-                            <ChevronRight size={14} />
-                          </a>
+                            <Share2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs pt-2 border-t border-slate-200/60">
+                        <div>
+                          <span className="font-bold text-slate-500">Reason: </span>
+                          <span className="text-slate-800">{request.reason || '-'}</span>
+                        </div>
+                        {request.remark && (
+                          <div>
+                            <span className="font-bold text-slate-500">Remark: </span>
+                            <span className="text-slate-800">{request.remark}</span>
+                          </div>
+                        )}
+                        {request.approvedBy && (
+                          <div>
+                            <span className="font-bold text-slate-500">Processed By: </span>
+                            <span className="text-slate-800">{request.approvedBy} ({formatDOB(request.approvalActual)})</span>
+                          </div>
+                        )}
+                        {request.approvalRemarks && (
+                          <div>
+                            <span className="font-bold text-slate-500">Approval Remark: </span>
+                            <span className="text-slate-800">{request.approvalRemarks}</span>
+                          </div>
                         )}
                       </div>
-
-                      <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                        <DetailItem label="Department" value={request.department} />
-                        <DetailItem label="Job Location" value={request.jobLocation} />
-                        <DetailItem label="Planned" value={formatDOB(request.approvalPlanned)} />
-                        <DetailItem label="Actual" value={formatDOB(request.approvalActual)} />
-                        <DetailItem label="Approved By" value={request.approvedBy} />
-                        <DetailItem label="Applied Date" value={formatDOB(request.appliedDate)} />
-                        <DetailItem label="Delay" value={request.approvalDelay} />
-                        <DetailItem label="Request Remark" value={request.remark} />
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                        <div className="rounded-2xl bg-white/70 p-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Reason</p>
-                          <p className="mt-1 text-sm text-gray-900 break-words">{request.reason || '-'}</p>
-                        </div>
-                        <div className={`rounded-2xl p-3 ${isRejected ? 'bg-red-100/70' : 'bg-white/70'}`}>
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                            {isRejected ? 'Rejected Reason' : 'Approval Remarks'}
-                          </p>
-                          <p className="mt-1 text-sm text-gray-900 break-words">{request.approvalRemarks || '-'}</p>
-                        </div>
-                      </div>
                     </article>
-                    </React.Fragment>
                   );
-                })
-              ) : (
-                <div className="col-span-2 px-6 py-12 text-center">
-                  <p className="text-gray-500">No leave requests found.</p>
-                </div>
-              )}
-              {filteredLeaveRequests.length > 0 && (
-                <div className="col-span-2 flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-gray-500">
-                    Showing {Math.min(visibleLimit, filteredLeaveRequests.length)} of {filteredLeaveRequests.length} records
-                  </p>
-                  {visibleLimit < filteredLeaveRequests.length && (
+                })}
+
+                {visibleLimit < filteredLeaveRequests.length && (
+                  <div className="pt-3 text-center">
                     <button
                       type="button"
                       onClick={() => setVisibleLimit((limit) => limit + LEAVE_PAGE_SIZE)}
-                      className="inline-flex items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                      className="inline-flex items-center justify-center rounded-xl border border-slate-300 px-5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
                     >
-                      Load more
+                      Load More ({filteredLeaveRequests.length - visibleLimit} remaining)
                     </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="py-12 text-center text-slate-400">
+                <p>No leave requests found for the selected filters.</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {selectedLeaveRequest && selectedLeaveStatusMeta && (
-        <div className="fixed inset-0 z-[130] flex items-end justify-center bg-slate-950/55 p-4 pb-24 sm:hidden">
-          <div className="max-h-[78dvh] w-full max-w-md overflow-y-auto rounded-[28px] bg-white shadow-[0_24px_54px_rgba(15,23,42,0.22)]">
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-100 bg-white px-5 py-4">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="truncate text-lg font-black text-slate-950">{selectedLeaveRequest.leaveRequestId || 'Leave Request'}</h3>
-                  <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${selectedLeaveStatusMeta.badgeClass}`}>
-                    {SelectedLeaveStatusIcon ? <SelectedLeaveStatusIcon size={14} className={selectedLeaveStatusMeta.iconClass} /> : null}
-                    {selectedLeaveStatusMeta.label}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm font-bold text-slate-500">
-                  {formatDOB(selectedLeaveRequest.startDate)} to {formatDOB(selectedLeaveRequest.endDate)} | {selectedLeaveRequest.days || '-'}
-                </p>
+      {/* 4. POPUP MODAL: New Leave Application Form */}
+      {showModal && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowModal(false);
+          }}
+        >
+          <div className="relative w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-200 my-auto">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3 bg-slate-50/80 shrink-0">
+              <div>
+                <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                  New Leave Application Form
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">Fill in details below to submit for manager approval</p>
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedLeaveRequest(null)}
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-slate-50 text-slate-500"
-                aria-label="Close details"
+                onClick={() => setShowModal(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 transition"
+                aria-label="Close"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className={`m-4 rounded-[24px] border p-4 ${selectedLeaveStatusMeta.cardClass}`}>
-              <div className="grid grid-cols-2 gap-3">
-                <DetailItem label="Department" value={selectedLeaveRequest.department} />
-                <DetailItem label="Job Location" value={selectedLeaveRequest.jobLocation} />
-                <DetailItem label="Planned" value={formatDOB(selectedLeaveRequest.approvalPlanned)} />
-                <DetailItem label="Actual" value={formatDOB(selectedLeaveRequest.approvalActual)} />
-                <DetailItem label="Approved By" value={selectedLeaveRequest.approvedBy} />
-                <DetailItem label="Applied Date" value={formatDOB(selectedLeaveRequest.appliedDate)} />
-                <DetailItem label="Delay" value={selectedLeaveRequest.approvalDelay} />
-                <DetailItem label="Request Remark" value={selectedLeaveRequest.remark} />
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <div className="rounded-2xl bg-white/70 p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Reason</p>
-                  <p className="mt-1 text-sm text-gray-900 break-words">{selectedLeaveRequest.reason || '-'}</p>
-                </div>
-                <div className={`rounded-2xl p-3 ${selectedLeaveStatusMeta.label === 'Rejected' ? 'bg-red-100/70' : 'bg-white/70'}`}>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                    {selectedLeaveStatusMeta.label === 'Rejected' ? 'Rejected Reason' : 'Approval Remarks'}
-                  </p>
-                  <p className="mt-1 text-sm text-gray-900 break-words">{selectedLeaveRequest.approvalRemarks || '-'}</p>
-                </div>
-                {selectedLeaveRequest.imageUrl && (
-                  <a
-                    href={selectedLeaveRequest.imageUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 text-sm font-black text-white"
-                  >
-                    View Image
-                    <ChevronRight size={15} />
-                  </a>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal for new leave request - Updated to match LeaveManagement */}
-      {showModal && (
-        <div className="fixed inset-0 z-[120] bg-black bg-opacity-50 overflow-y-auto flex items-start justify-center pt-6 pb-10 p-4">
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-5xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center p-6 border-b sticky top-0 bg-white z-10">
-              <h3 className="text-lg font-medium">New Leave Request</h3>
-              <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-gray-700">
-                <X size={20} />
-              </button>
-            </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4" autoComplete="off">
-
-              {/* Row 1: Requested By, Departments, Total Leaves, Job Location */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Modal Form Content */}
+            <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-3 overflow-y-auto" autoComplete="off">
+              {/* Row 1: 3 columns */}
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Requested By *</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Employee Name *</label>
                   <input
                     type="text"
                     name="employeeName"
                     value={formData.employeeName}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-gray-100 focus:outline-none"
-                    readOnly
+                    onChange={handleInputChange}
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-semibold bg-slate-50 text-slate-800 focus:outline-none focus:bg-white focus:border-slate-900"
+                    required
                   />
-                  {employeeDetailsLoading && (
-                    <p className="mt-1 text-xs text-gray-500">Loading...</p>
-                  )}
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Departments *</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Department *</label>
                   <select
                     name="department"
                     value={formData.department}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-slate-900"
                     required
                   >
                     <option value="">Select department</option>
@@ -1136,70 +1047,89 @@ const LeaveRequest = () => {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Total No of leaves days</label>
-                  <input
-                    type="text"
-                    value={formatLeaveDays(formData.fromDate, formData.toDate, formData.halfDay)}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-gray-100 focus:outline-none"
-                    placeholder="Auto calculated"
-                    readOnly
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Job location *</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Job Location *</label>
                   <input
                     type="text"
                     name="jobLocation"
                     value={formData.jobLocation}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
+                    placeholder="e.g. Raipur / Site"
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-slate-900"
                     required
                   />
                 </div>
               </div>
 
-              {/* Row 2: Date From, Date To, Half Day, Image Upload */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Row 2: 4 columns */}
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Date of leave FROM *</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Date From *</label>
                   <input
                     type="date"
                     name="fromDate"
                     value={formData.fromDate}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-slate-900"
                     required
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">TO *</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Date To *</label>
                   <input
                     type="date"
                     name="toDate"
                     value={formData.toDate}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-slate-900"
                     required
                   />
                 </div>
+
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Half Day</label>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Total Days (Auto)</label>
+                  <input
+                    type="text"
+                    value={formatLeaveDays(formData.fromDate, formData.toDate, formData.halfDay) || '0 days'}
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-bold bg-amber-50 text-amber-900 focus:outline-none"
+                    readOnly
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Leave Type</label>
                   <select
                     name="halfDay"
                     value={formData.halfDay}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-slate-900"
                   >
                     <option value="">Full Day</option>
-                    <option value="1st Half">1st Half</option>
-                    <option value="2nd Half">2nd Half</option>
+                    <option value="1st Half">1st Half (0.5 Day)</option>
+                    <option value="2nd Half">2nd Half (0.5 Day)</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Row 3: Reason + Remark side by side */}
+              <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Image</label>
-                  <label className="flex h-[42px] w-full cursor-pointer items-center justify-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                    {uploadingImage ? 'Uploading...' : formData.imageUrl ? 'Image uploaded ✓' : 'Upload image'}
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Reason for Taking Leave *</label>
+                  <input
+                    type="text"
+                    name="reason"
+                    value={formData.reason}
+                    onChange={handleInputChange}
+                    className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-medium bg-white text-slate-800 focus:outline-none focus:border-slate-900"
+                    placeholder="Enter reason for leave..."
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">Attach Image (Optional)</label>
+                  <label className="flex h-9 w-full cursor-pointer items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2 text-xs font-bold text-slate-700 hover:bg-slate-100 transition">
+                    {uploadingImage ? 'Uploading...' : formData.imageUrl ? '✓ Attached' : '+ Upload Image'}
                     <input
                       type="file"
                       accept="image/*"
@@ -1211,69 +1141,44 @@ const LeaveRequest = () => {
                 </div>
               </div>
 
-              {/* Row 3: Reason + Remark side by side */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Reason for Taking Leave *</label>
-                  <textarea
-                    name="reason"
-                    value={formData.reason}
-                    onChange={handleInputChange}
-                    rows={3}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
-                    placeholder="Please provide reason for leave..."
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Remark</label>
-                  <textarea
-                    name="remark"
-                    value={formData.remark}
-                    onChange={handleInputChange}
-                    rows={3}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-navy"
-                    placeholder="Enter remark..."
-                  />
-                </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">Remark (Optional)</label>
+                <input
+                  type="text"
+                  name="remark"
+                  value={formData.remark}
+                  onChange={handleInputChange}
+                  className="w-full h-9 border border-slate-200 rounded-lg px-2.5 text-xs font-medium bg-white text-slate-800 focus:outline-none focus:border-slate-900"
+                  placeholder="Enter any additional remark..."
+                />
               </div>
 
-              <div className="flex justify-end space-x-2 pt-4">
+              {/* Submit Bar */}
+              <div className="flex justify-end items-center gap-2 pt-3 border-t border-slate-100 shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 transition"
                 >
                   Cancel
                 </button>
+
                 <button
                   type="submit"
-                  className={`px-4 py-2 text-white bg-navy rounded-md hover:bg-navy-dark min-h-[42px] flex items-center justify-center ${submitting ? 'opacity-75 cursor-not-allowed' : ''}`}
                   disabled={submitting || uploadingImage}
+                  className="inline-flex items-center justify-center px-5 py-2 rounded-lg bg-slate-950 hover:bg-slate-800 text-xs font-black text-white shadow-md transition disabled:opacity-50"
                 >
-                  {submitting ? (
-                    <div className="flex items-center">
-                      <svg
-                        className="animate-spin h-4 w-4 text-white mr-2"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      <span>Submitting...</span>
-                    </div>
-                  ) : 'Submit Request'}
+                  {submitting ? 'Submitting...' : 'Submit Leave Application'}
                 </button>
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-      </div>
     </div>
   );
 };
 
 export default LeaveRequest;
+

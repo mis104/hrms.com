@@ -63,6 +63,12 @@ import ExitChecklist from "./pages/ExitChecklist";
 import FeedManagement from "./pages/FeedManagement";
 import ModulePlaceholder from "./pages/ModulePlaceholder";
 import { placeholderRoutes } from "./config/hrModules";
+import QuickLeaveAction from "./pages/QuickLeaveAction";
+import WhatsappService from "./pages/WhatsappService";
+import LocalTravel from "./pages/LocalTravel";
+import OutstationTravel from "./pages/OutstationTravel";
+import AdvanceRequest from "./pages/AdvanceRequest";
+import HodMaster from "./pages/HodMaster";
 function App() {
   return (
     <div className="gradient-bg min-h-screen">
@@ -70,6 +76,9 @@ function App() {
         <Toaster position="top-right" />
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/quick-leave" element={<QuickLeaveAction />} />
+          <Route path="/leave-action" element={<QuickLeaveAction />} />
+
 
           <Route
             path="/"
@@ -116,6 +125,10 @@ function App() {
             <Route path="attendance" element={<Attendance />} />
             <Route path="outstation-attendance" element={<OutstationAttendance />} />
             <Route path="ta-da" element={<TaDa />} />
+            <Route path="local-travel" element={<LocalTravel />} />
+            <Route path="outstation-travel" element={<OutstationTravel />} />
+            <Route path="advance-request" element={<AdvanceRequest />} />
+            <Route path="advance" element={<AdvanceRequest />} />
             <Route path="attendancedaily" element={<Attendancedaily />} />
             <Route path="report" element={<Report />} />
             <Route path="payroll" element={<Payroll />} />
@@ -142,6 +155,10 @@ function App() {
             <Route path="company-assets" element={<CompanyAssets />} />
             <Route path="exit-checklist" element={<ExitChecklist />} />
             <Route path="feed-management" element={<FeedManagement />} />
+            <Route path="whatsapp-service" element={<WhatsappService />} />
+            <Route path="settings/whatsapp-service" element={<WhatsappService />} />
+            <Route path="hod-master" element={<HodMaster />} />
+            <Route path="settings/hod-master" element={<HodMaster />} />
             {placeholderRoutes.map((route) => (
               <Route
                 key={route.path}

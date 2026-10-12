@@ -1,11 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Filter, Search, Clock, CheckCircle, ImageIcon, X, User, Briefcase, MapPin, Calendar, FileText, Phone, Mail, Download } from "lucide-react";
+import { createPortal } from "react-dom";
+import { 
+  Filter, Search, Clock, CheckCircle, CheckCircle2, ImageIcon, X, User, 
+  Briefcase, MapPin, Calendar, FileText, Phone, Mail, Download, RefreshCw, 
+  Users, UserCheck, LayoutList, LayoutGrid, ChevronRight, AlertCircle, Sparkles, 
+  Building2, Edit, Eye, CreditCard, Shield, ExternalLink, Laptop, Smartphone, 
+  AtSign, Copy, Check, Award, ChevronDown
+} from "lucide-react";
 
 import toast from "react-hot-toast";
 import * as XLSX from "xlsx";
+import { supabase } from "../services/supabaseClient";
 
 const Employee = () => {
   const [activeTab, setActiveTab] = useState("joining");
+  const [viewMode, setViewMode] = useState("table"); // 'table' or 'grid'
   const [searchTerm, setSearchTerm] = useState("");
   const [formData, setFormData] = useState({
     dateOfLeaving: "",
@@ -73,15 +82,43 @@ const Employee = () => {
   const [joiningPlaceFilter, setJoiningPlaceFilter] = useState("");
   const [joiningPlaces, setJoiningPlaces] = useState([]);
 
-  // Helper to convert Google Drive link to direct image link
-  const getDriveImageUrl = (url, size) => {
-    if (!url) return null;
-    const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/) || url.match(/id=([a-zA-Z0-9_-]+)/);
-    if (match && match[1]) {
-      // Safest embedded link that works in img tags
-      return `https://drive.google.com/thumbnail?id=${match[1]}${size ? `&sz=w${size}` : ""}`;
+  const getInitials = (name) => {
+    if (!name) return "?";
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  };
+
+  const getAvatarGradient = (name) => {
+    const gradients = [
+      "from-indigo-500 to-purple-600",
+      "from-blue-500 to-cyan-600",
+      "from-emerald-500 to-teal-600",
+      "from-violet-500 to-fuchsia-600",
+      "from-amber-500 to-orange-600",
+      "from-rose-500 to-pink-600"
+    ];
+    if (!name) return gradients[0];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash += name.charCodeAt(i);
+    return gradients[hash % gradients.length];
+  };
+
+  // Helper to convert Google Drive link or Cloudinary to direct high-res image link
+  const getDriveImageUrl = (url, size = 200) => {
+    if (!url) return "";
+    const str = url.toString().trim();
+    if (!str) return "";
+
+    if (str.includes("cloudinary.com")) {
+      return size ? str.replace("/upload/", `/upload/w_${size},q_auto,f_auto/`) : str;
     }
-    return url;
+
+    const match = str.match(/\/d\/([a-zA-Z0-9_-]+)/) || str.match(/id=([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      return `https://lh3.googleusercontent.com/d/${match[1]}=w${size}`;
+    }
+    return str;
   };
 
   const formatDOB = (dateString) => {
@@ -130,190 +167,202 @@ const Employee = () => {
     setTableLoading(true);
     setError(null);
     try {
-      // Fetch both sheets in parallel using SPECIFIC URLs from .env
-      const [joiningResponse, leavingResponse] = await Promise.all([
-        fetch(`${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS&_=${Date.now()}`),
-        fetch(`${import.meta.env.VITE_LEAVING_SHEET_URL}?action=read&sheet=FMS&_=${Date.now()}`)
+      // Fetch joining_fms and leaving_fms directly from Supabase
+      const [sbJoiningRes, sbLeavingRes] = await Promise.all([
+        supabase.from("joining_fms").select("*").order("id", { ascending: true }),
+        supabase.from("leaving_fms").select("*").order("id", { ascending: true })
       ]);
 
-      const [joiningText, leavingText] = await Promise.all([
-        joiningResponse.text(),
-        leavingResponse.text()
+      if (sbJoiningRes.error) throw sbJoiningRes.error;
+      if (sbLeavingRes.error) throw sbLeavingRes.error;
+
+      const rawJoining = sbJoiningRes.data || [];
+      const rawLeaving = sbLeavingRes.data || [];
+
+      // Set standard headers for excel export fallback
+      setSheetHeaders([
+        "Employee Code", "Candidate Name", "Department", "Designation",
+        "Date of Joining", "Joining Place", "Finalized Salary",
+        "Contact No", "Email Id", "Father Name", "Status"
       ]);
-
-      // Parse JSON safely
-      const joiningJson = parseJsonSafely(joiningText, { data: [] });
-      const leavingJson = parseJsonSafely(leavingText, { data: [] });
-
-      const rawJoining = joiningJson.data || [];
-      const rawLeaving = leavingJson.data || [];
-
-      // Find the header row dynamically
-      let headerRowIndex = 6; // fallback
-      if (rawJoining.length > 0) {
-        const foundIndex = rawJoining.findIndex(row => 
-          row && row.some(cell => cell && cell.toString().trim().toLowerCase() === "employee code")
-        );
-        if (foundIndex !== -1) {
-          headerRowIndex = foundIndex;
-        }
-      }
-
-      if (rawJoining.length > headerRowIndex) {
-        setSheetHeaders(rawJoining[headerRowIndex] || []);
-      }
 
       // --- Process FMS / Leaving Data ---
-      // We need FMS IDs to filter Joining Data
-      const fmsIds = new Set();
-      
-      const joiningMap = new Map();
-      let jIdxIndent = 5, jIdxDept = 2, jIdxDOJ = 12, jIdxPlace = 13, jIdxPhoto = 18, jIdxFather = 11;
-      
-      if (rawJoining.length > 7) {
-        const jHeaders = rawJoining[6] || [];
-        const getJIdx = (name) => jHeaders.findIndex(h => h && h.toString().trim().toLowerCase() === name.trim().toLowerCase());
-        
-        if(getJIdx("Indent Number") !== -1) jIdxIndent = getJIdx("Indent Number");
-        if(getJIdx("Department") !== -1) jIdxDept = getJIdx("Department");
-        if(getJIdx("Date of Joining") !== -1) jIdxDOJ = getJIdx("Date of Joining");
-        if(getJIdx("Joining Place") !== -1) jIdxPlace = getJIdx("Joining Place");
-        
-        if(getJIdx("Candidate Photo") !== -1) jIdxPhoto = getJIdx("Candidate Photo");
-        else if(getJIdx("Profile Photo") !== -1) jIdxPhoto = getJIdx("Profile Photo");
-        
-        if(getJIdx("Father Name") !== -1) jIdxFather = getJIdx("Father Name");
-        else if(getJIdx("Father's Name") !== -1) jIdxFather = getJIdx("Father's Name");
+      const jMap = new Map();
+      rawJoining.forEach(jRow => {
+        const c = normalizeId(jRow.employee_code);
+        const ind = normalizeId(jRow.indent_no);
+        const nm = normalizeId(jRow.candidate_name);
+        if (c) jMap.set(c, jRow);
+        if (ind) jMap.set(ind, jRow);
+        if (nm) jMap.set(nm, jRow);
+      });
 
-        rawJoining.slice(7).forEach(row => {
-          const id = normalizeId(row[jIdxIndent]);
-          if (id) {
-            joiningMap.set(id, row);
-          }
-        });
-      }
+      const seenLeavingKeys = new Set();
+      const processedLeaving = rawLeaving.map(row => {
+        const lEmpId = normalizeId(row.employee_id);
+        const lName = normalizeId(row.candidate_name);
+        const jRow = jMap.get(lEmpId) || jMap.get(lName) ||
+          rawJoining.find(jr => lEmpId && normalizeId(jr.indent_no) && lEmpId.startsWith(normalizeId(jr.indent_no))) || {};
 
-      let processedLeaving = [];
-
-      if (rawLeaving.length > 7) {
-        const leavingRows = rawLeaving.slice(7);
-
-        // 1. Build ID Set for Deduplication
-        leavingRows.forEach(row => {
-          const id = normalizeId(row[5]); // Column F (Index 5) is ID
-          if (id) fmsIds.add(id);
-        });
-
-        const seenLeavingKeys = new Set();
-        // 2. Process for Leaving Tab Display (Column AS / Index 44 == 'Yes')
-        processedLeaving = leavingRows.map(row => {
-          const isArchivedManual = row[44] && row[44].toString().trim().toLowerCase() === 'yes';
-          const isChecklistFilled = row[42] && row[42].toString().trim().toLowerCase() === 'done';
-
-          const idStr = normalizeId(row[5]);
-          const jRow = joiningMap.get(idStr) || [];
-
-          return {
-            originalRow: row,
-            employeeId: row[5] || "",
-            name: row[10] || "",
-            candidateName: row[10] || "", // For modal compatibility
-            designation: row[11] || "",
-            mobileNo: row[12] || "",
-            lastWorkingDay: row[7] || "",
-            dateOfLeaving: row[7] || "",
-            reasonOfLeaving: row[8] || "",
-            salary: row[9] || "",
-            dateOfJoining: jRow[jIdxDOJ] || "",
-            joiningPlace: jRow[jIdxPlace] || "",
-            department: jRow[jIdxDept] || "",
-            fatherName: jRow[jIdxFather] || "",
-            candidatePhoto: jRow[jIdxPhoto] || "",
-
-            isArchived: isArchivedManual || isChecklistFilled
-          };
-        }).filter(item => {
-          if (!item.isArchived) return false;
-          
-          const id = normalizeId(item.employeeId);
-          const uniqueKey = id || (item.name + "-" + item.mobileNo).toLowerCase().replace(/[^a-z0-9]/g, "");
-          if (uniqueKey) {
-            if (seenLeavingKeys.has(uniqueKey)) return false;
-            seenLeavingKeys.add(uniqueKey);
-          }
-          return true;
-        });
-      }
+        return {
+          dbId: row.id,
+          originalRow: { ...jRow, ...row },
+          employeeId: row.employee_id || jRow.employee_code || jRow.indent_no || "",
+          name: row.candidate_name || jRow.candidate_name || "",
+          candidateName: row.candidate_name || jRow.candidate_name || "",
+          designation: row.designation || jRow.designation || "",
+          mobileNo: row.mobile_no || jRow.mobile_no || "",
+          lastWorkingDay: row.last_working_day || "",
+          dateOfLeaving: row.last_working_day || "",
+          reasonOfLeaving: row.reason_for_resignation || "",
+          salary: row.salary || jRow.finalized_salary || jRow.salary || "",
+          familyMobileNo: row.family_mobile_no || jRow.family_mobile_no || "",
+          relationshipWithFamily: row.relationship_with_family_person || jRow.relationship_with_family_person || "",
+          pastPfId: row.past_pf_id_no || jRow.past_pf_id_no || "",
+          currentBankAcNo: row.current_bank_ac_no || jRow.current_bank_ac_no || "",
+          ifscCode: row.ifsc_code || jRow.ifsc_code || "",
+          branchName: row.branch_name || jRow.branch_name || "",
+          bankPassbookPhoto: row.photo_of_front_bank_passbook || jRow.photo_of_front_bank_passbook || "",
+          personalEmail: row.personal_email_id || jRow.personal_email_id || "",
+          emailId: row.personal_email_id || jRow.personal_email_id || "",
+          esicNo: row.esic_no || jRow.esic_no || "",
+          highestQualification: row.highest_qualification || jRow.highest_qualification || "",
+          aadharCardNo: row.aadhar_card_no || jRow.aadhar_card_no || "",
+          qualificationPhoto: row.qualification_photo || jRow.qualification_photo || "",
+          salarySlip: row.salary_slip || jRow.salary_slip || "",
+          resumeUpload: row.resume_cv_upload || jRow.resume_cv_upload || "",
+          dateOfJoining: jRow.date_of_joining || "",
+          joiningPlace: jRow.joining_place || "",
+          department: jRow.department || jRow.joining_place || "",
+          fatherName: jRow.father_name || "",
+          candidatePhoto: jRow.candidate_photo || "",
+          aadharPhoto: jRow.aadhar_frontside_photo || "",
+          panCard: jRow.pan_card || "",
+          isArchived: true
+        };
+      }).filter(item => {
+        const id = normalizeId(item.employeeId);
+        const uniqueKey = id || (item.name + "-" + item.mobileNo).toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (uniqueKey) {
+          if (seenLeavingKeys.has(uniqueKey)) return false;
+          seenLeavingKeys.add(uniqueKey);
+        }
+        return true;
+      });
 
       setLeavingData(processedLeaving);
 
-      // --- Process Joining Data ---
-      let processedJoining = [];
-      if (rawJoining.length > 7) {
-        // Dynamic Headers check
-        const headers = rawJoining[6] || [];
-        const getIndex = (name) => headers.findIndex(h => h && h.toString().trim().toLowerCase() === name.trim().toLowerCase());
+      // Helper to detect if an employee has left
+      const isEmployeeLeaving = (jRow) => {
+        if ((jRow.leave || "").trim().toLowerCase() === "yes") return true;
 
-        const idxIndent = getIndex("Indent Number") !== -1 ? getIndex("Indent Number") : 5;
-        const idxName = getIndex("Candidate Name") !== -1 ? getIndex("Candidate Name") : 10;
-        const idxDept = getIndex("Department") !== -1 ? getIndex("Department") : 2;
-        const idxDesig = getIndex("Designation") !== -1 ? getIndex("Designation") : 14;
-        const idxMobile = getIndex("Contact No") !== -1 ? getIndex("Contact No") : 23;
-        const idxEmail = getIndex("Email Id") !== -1 ? getIndex("Email Id") : 31;
-        // Dynamic Status Index
-        const idxStatus = getIndex("Status") !== -1 ? getIndex("Status") : 8;
+        const normCode = normalizeId(jRow.employee_code);
+        const normIndent = normalizeId(jRow.indent_no);
+        const normName = normalizeId(jRow.candidate_name);
 
-        const seenJoiningKeys = new Set();
-        
-        processedJoining = rawJoining.slice(7).map((row, idx) => ({
-          rowIndex: idx + 8, // row index in sheet (7 sliceOffset + 1 base index == 8)
-          employeeId: row[idxIndent] || "",
-          candidateName: row[idxName] || "",
-          department: row[idxDept] || "",
-          designation: row[idxDesig] || "",
-          mobileNo: row[idxMobile] || "",
-          emailId: row[idxEmail] || "",
-          fatherName: row[11] || "",
-          dateOfJoining: row[12] || "",
-          joiningPlace: row[13] || "",
-          aadharPhoto: row[16] || "",
-          candidatePhoto: row[18] || "",
-          status: row[idxStatus] || "",
-          colBM: row[64] || "", // Column BM (Index 64)
-          originalRow: row, // Keep original row to reconstruct for update
-        })).filter(item => {
-          // Filter 1: Status is DONE (Case Insensitive)
-          const isDone = item.status && item.status.toString().trim().toUpperCase() === "DONE";
-          // Filter 2: Not in FMS (Robust check)
-          const id = normalizeId(item.employeeId);
-          const inFms = fmsIds.has(id);
-          // Filter 3: Column BM (Index 64) must be EMPTY/NULL
-          // "where not null value ... hide the data" -> so enable if null/empty
-          const isBMEmpty = !item.colBM || item.colBM.toString().trim() === "";
+        for (const lRow of rawLeaving) {
+          const lEmpId = normalizeId(lRow.employee_id);
+          const lName = normalizeId(lRow.candidate_name);
 
-          if (!(isDone && !inFms && isBMEmpty)) return false;
-          
-          // Deduplication: prevent showing the same employee multiple times
-          const uniqueKey = id || (item.candidateName + "-" + item.mobileNo).toLowerCase().replace(/[^a-z0-9]/g, "");
-          if (uniqueKey) {
-            if (seenJoiningKeys.has(uniqueKey)) return false;
-            seenJoiningKeys.add(uniqueKey);
+          // 1. Direct code or indent match
+          if (normCode && normCode === lEmpId) return true;
+          if (normIndent && normIndent === lEmpId) return true;
+
+          // 2. Exact or substring name match (e.g. Soni & Soni Singh, Topeshwar & Topeshwar Das Panika)
+          if (normName && lName) {
+            if (normName === lName) return true;
+            if ((normName.includes(lName) || lName.includes(normName)) && 
+                (lEmpId.startsWith(normIndent) || normIndent.length === 0)) {
+              return true;
+            }
           }
-          
-          return true;
-        });
-      }
+
+          // 3. Indent prefix match if name starts with same 4 chars
+          if (normIndent && lEmpId.startsWith(normIndent)) {
+            const firstWordJ = normName.slice(0, 4);
+            const firstWordL = lName.slice(0, 4);
+            if (firstWordJ && firstWordL && firstWordJ === firstWordL) return true;
+          }
+        }
+        return false;
+      };
+
+      // --- Process Joining Data ---
+      const seenJoiningKeys = new Set();
+      const processedJoining = rawJoining.map((row, idx) => ({
+        dbId: row.id,
+        rowIndex: idx + 1,
+        employeeId: row.employee_code || row.indent_no || "",
+        indentNo: row.indent_no || "",
+        candidateName: row.candidate_name || row.name_as_per_aadhar || "",
+        fatherName: row.father_name || "",
+        department: row.department || row.joining_place || row.lookup_designation || "",
+        designation: row.designation || row.lookup_designation || "",
+        mobileNo: row.mobile_no || "",
+        emailId: row.personal_email_id || "",
+        personalEmail: row.personal_email_id || "",
+        dateOfJoining: row.date_of_joining || "",
+        joiningPlace: row.joining_place || "",
+        salary: row.finalized_salary || row.salary || "",
+        currentAddress: row.current_address || "",
+        addressAsPerAadhar: row.address_as_per_aadhar_card || "",
+        dobAsPerAadhar: row.dob_as_per_aadhar || "",
+        gender: row.gender || "",
+        familyMobileNo: row.family_mobile_no || "",
+        relationshipWithFamily: row.relationship_with_family_person || "",
+        pastPfId: row.past_pf_id_no || "",
+        currentBankAcNo: row.current_bank_ac_no || "",
+        ifscCode: row.ifsc_code || "",
+        branchName: row.branch_name || "",
+        esicNo: row.esic_no || "",
+        highestQualification: row.highest_qualification || "",
+        aadharCardNo: row.aadhar_card_no || "",
+        aadharPhoto: row.aadhar_frontside_photo || "",
+        panCard: row.pan_card || "",
+        candidatePhoto: row.candidate_photo || "",
+        bankPassbookPhoto: row.photo_of_front_bank_passbook || "",
+        qualificationPhoto: row.qualification_photo || "",
+        salarySlip: row.salary_slip || "",
+        resumeUpload: row.resume_cv_upload || "",
+        laptopBrandModel: row.laptop_brand_model || "",
+        assets: row.assets || "",
+        mobileBrandSim: row.mobile_brand_sim || "",
+        gmailId: row.gmail_id || "",
+        status: row.update_link || "",
+        leave: row.leave || "",
+        colBM: "",
+        originalRow: row,
+      })).filter(item => {
+        // Filter 1: Status is DONE (Case Insensitive)
+        const isDone = item.status && item.status.toString().trim().toUpperCase() === "DONE";
+        if (!isDone) return false;
+
+        // Filter 2: Must NOT have left
+        if (isEmployeeLeaving(item.originalRow)) return false;
+
+        // Deduplication: prevent showing the same employee multiple times (e.g. Vijay Driver, Upendra, Lakeshwar)
+        const normName = normalizeId(item.candidateName);
+        const normIndent = normalizeId(item.indentNo);
+        const normMobile = normalizeId(item.mobileNo);
+        const uniqueKey = normName + "-" + (normIndent || normMobile);
+
+        if (uniqueKey) {
+          if (seenJoiningKeys.has(uniqueKey)) return false;
+          seenJoiningKeys.add(uniqueKey);
+        }
+
+        return true;
+      });
 
       setJoiningData(processedJoining);
 
-      // Extract unique joining places for the filter dropdown case-insensitively
+      // Extract unique joining places for the filter dropdown
       const placesMap = new Map();
       processedJoining.forEach(item => {
         const place = item.joiningPlace && item.joiningPlace.toString().trim();
         if (place) {
           const lowerPlace = place.toLowerCase();
           if (!placesMap.has(lowerPlace)) {
-            // Store the first occurrence as the display name
             placesMap.set(lowerPlace, place);
           }
         }
@@ -369,24 +418,7 @@ const Employee = () => {
     setShowModal(true);
   };
 
-  const handleViewProfile = (item) => {
-    setImagePreview(null);
-    setSelectedProfile(item);
-    setShowProfileModal(true);
-  };
 
-  const closeProfileModal = () => {
-    setImagePreview(null);
-    setShowProfileModal(false);
-  };
-
-  const openImagePreview = (photoUrl, altText) => {
-    if (!photoUrl) return;
-    setImagePreview({
-      src: getDriveImageUrl(photoUrl, 1600),
-      alt: altText || "Employee photo",
-    });
-  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -451,8 +483,8 @@ const Employee = () => {
     });
   };
 
-  const handleEditClick = (item) => {
-    setEditingItem(item);
+  const handleViewProfile = (item) => {
+    if (!item) return;
     const row = item.originalRow || [];
     const getVal = (names, defaultIdx) => {
       const idx = sheetHeaders.findIndex(
@@ -462,29 +494,110 @@ const Employee = () => {
       return row[useIdx] || "";
     };
 
+    setSelectedProfile({
+      ...item,
+      candidateName: item.candidateName || item.name || getVal(["Candidate Name", "Name as per Aadhar", "Name"], 10),
+      fatherName: item.fatherName || getVal(["Father Name", "Father's Name"], 11),
+      dateOfJoining: item.dateOfJoining || getVal(["Date of Joining"], 12),
+      joiningPlace: item.joiningPlace || getVal(["Joining Place"], 13),
+      designation: item.designation || getVal(["Designation"], 14),
+      salary: item.salary || getVal(["Salary", "Finalized Salary"], 15),
+      currentAddress: item.currentAddress || getVal(["Current Address"], 19),
+      addressAsPerAadhar: item.addressAsPerAadhar || getVal(["Address as per Aadhar", "Address As per Aadhar Card"], 20),
+      dobAsPerAadhar: item.dobAsPerAadhar || getVal(["DOB as per Aadhar", "Date of Birth As Per Aadhar Card", "Date of Birth"], 21),
+      gender: item.gender || getVal(["Gender"], 22),
+      mobileNo: item.mobileNo || getVal(["Contact No", "Mobile No", "Mobile Number"], 23),
+      familyMobileNo: item.familyMobileNo || getVal(["Family Mobile No.", "Family Mobile No"], 24),
+      relationshipWithFamily: item.relationshipWithFamily || getVal(["Relationship with Family Person"], 25),
+      pastPfId: item.pastPfId || getVal(["Past Pf Id No. (If Any)", "Past PF ID", "PF ID"], 26),
+      currentBankAcNo: item.currentBankAcNo || getVal(["Current Bank AC No.", "Current Bank AC No", "Bank Account No"], 27),
+      ifscCode: item.ifscCode || getVal(["IFSC Code"], 28),
+      branchName: item.branchName || getVal(["Branch Name"], 29),
+      personalEmail: item.emailId || item.personalEmail || getVal(["Personal Email-Id", "Email Id", "Personal Email", "Email"], 31),
+      esicNo: item.esicNo || getVal(["ESIC No (IF Any)", "ESIC No"], 32),
+      highestQualification: item.highestQualification || getVal(["Highest Qualification"], 33),
+      aadharCardNo: item.aadharCardNo || getVal(["Aadhar Card No", "Aadhar No"], 34),
+      department: item.department || getVal(["Department"], 2),
+      aadharPhoto: item.aadharPhoto || getVal(["Aadhar Frontside photo", "Aadhar Front Photo", "Aadhar Photo"], 16),
+      panCard: item.panCard || getVal(["Pan Card", "PAN Card"], 17),
+      candidatePhoto: item.candidatePhoto || getVal(["Candidate Photo", "Profile Photo"], 18),
+      bankPassbookPhoto: item.bankPassbookPhoto || getVal(["Photo Of Front Bank Passbook", "Bank Passbook Photo"], 30),
+      qualificationPhoto: item.qualificationPhoto || getVal(["Qualication Photo", "Highest Qualification Photo", "Qualification Photo"], 35),
+      salarySlip: item.salarySlip || getVal(["Salary Slip"], 36),
+      resumeUpload: item.resumeUpload || getVal(["Resume/Cv Upload", "Resume Upload", "Resume"], 37),
+      laptopBrandModel: item.laptop_brand_model || item.laptopBrandModel || getVal(["LAPTOP BRAND NAME -MODEL NAME", "Laptop Brand Model", "Laptop"], 41),
+      assets: item.assets || getVal(["ASSESTS", "Assets"], 42),
+      mobileBrandSim: item.mobile_brand_sim || item.mobileBrandSim || getVal(["MOBILE BRAND NAME-SIM NUMBER", "Mobile Brand SIM", "Mobile SIM"], 43),
+      gmailId: item.gmail_id || item.gmailId || getVal(["GMAIL ID", "Gmail ID", "Official Email"], 44),
+      indentNo: item.indent_no || item.indentNo || getVal(["INDENT NO", "Indent No"], 46),
+    });
+    setShowProfileModal(true);
+  };
+
+  const closeProfileModal = () => {
+    setShowProfileModal(false);
+    setSelectedProfile(null);
+  };
+
+  const openImagePreview = (url, title) => {
+    setImagePreview({ url, title });
+  };
+
+  const handleDownloadFile = async (e, url, defaultName) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!url) return;
+    try {
+      const downloadUrl = getDriveImageUrl ? getDriveImageUrl(url, 2000) : url;
+      const res = await fetch(downloadUrl);
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = defaultName ? `${defaultName}.jpg` : "document.jpg";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success("Download started!");
+    } catch (err) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.download = defaultName || "document";
+      a.click();
+    }
+  };
+
+  const handleEditClick = (item) => {
+    setEditingItem(item);
+    const row = item.originalRow || {};
+
     setEditFormData({
-      candidateName: getVal(["Candidate Name", "Name as per Aadhar", "Name"], 10),
-      fatherName: getVal(["Father Name", "Father's Name"], 11),
-      dateOfJoining: convertToInputDate(getVal(["Date of Joining"], 12)),
-      joiningPlace: getVal(["Joining Place"], 13),
-      designation: getVal(["Designation"], 14),
-      salary: getVal(["Salary"], 15),
-      currentAddress: getVal(["Current Address"], 19),
-      addressAsPerAadhar: getVal(["Address as per Aadhar"], 20),
-      dobAsPerAadhar: convertToInputDate(getVal(["DOB as per Aadhar", "Date of Birth"], 21)),
-      gender: getVal(["Gender"], 22),
-      mobileNo: getVal(["Contact No", "Mobile No", "Mobile Number"], 23),
-      familyMobileNo: getVal(["Family Mobile No"], 24),
-      twoReferenceNo: getVal(["Two Reference No", "Reference"], 25),
-      pastPfId: getVal(["Past PF ID", "PF ID"], 26),
-      currentBankAcNo: getVal(["Current Bank AC No", "Bank Account No"], 27),
-      ifscCode: getVal(["IFSC Code"], 28),
-      branchName: getVal(["Branch Name"], 29),
-      personalEmail: getVal(["Email Id", "Personal Email", "Email"], 31),
-      esicNo: getVal(["ESIC No"], 32),
-      highestQualification: getVal(["Highest Qualification"], 33),
-      aadharCardNo: getVal(["Aadhar Card No", "Aadhar No"], 34),
-      department: getVal(["Department"], 2),
+      candidateName: item.candidateName || row.candidate_name || "",
+      fatherName: item.fatherName || row.father_name || "",
+      dateOfJoining: convertToInputDate(item.dateOfJoining || row.date_of_joining || ""),
+      joiningPlace: item.joiningPlace || row.joining_place || "",
+      designation: item.designation || row.designation || row.lookup_designation || "",
+      salary: item.salary || row.finalized_salary || row.salary || "",
+      currentAddress: item.currentAddress || row.current_address || "",
+      addressAsPerAadhar: item.addressAsPerAadhar || row.address_as_per_aadhar_card || "",
+      dobAsPerAadhar: convertToInputDate(item.dobAsPerAadhar || row.dob_as_per_aadhar || ""),
+      gender: item.gender || row.gender || "",
+      mobileNo: item.mobileNo || row.mobile_no || "",
+      familyMobileNo: item.familyMobileNo || row.family_mobile_no || "",
+      twoReferenceNo: row.two_reference_no || "",
+      pastPfId: item.pastPfId || row.past_pf_id_no || "",
+      currentBankAcNo: item.currentBankAcNo || row.current_bank_ac_no || "",
+      ifscCode: item.ifscCode || row.ifsc_code || "",
+      branchName: item.branchName || row.branch_name || "",
+      personalEmail: item.personalEmail || item.emailId || row.personal_email_id || "",
+      esicNo: item.esicNo || row.esic_no || "",
+      highestQualification: item.highestQualification || row.highest_qualification || "",
+      aadharCardNo: item.aadharCardNo || row.aadhar_card_no || "",
+      department: item.department || row.joining_place || row.lookup_designation || "",
 
       aadharPhotoFile: null,
       panCardFile: null,
@@ -494,13 +607,13 @@ const Employee = () => {
       salarySlipFile: null,
       resumeUploadFile: null,
 
-      aadharPhotoUrl: getVal(["Aadhar Front Photo", "Aadhar Photo"], 16),
-      panCardUrl: getVal(["PAN Card"], 17),
-      candidatePhotoUrl: getVal(["Candidate Photo", "Profile Photo"], 18),
-      bankPassbookPhotoUrl: getVal(["Bank Passbook Photo"], 30),
-      qualificationPhotoUrl: getVal(["Qualification Photo"], 35),
-      salarySlipUrl: getVal(["Salary Slip"], 36),
-      resumeUploadUrl: getVal(["Resume Upload", "Resume"], 37),
+      aadharPhotoUrl: item.aadharPhoto || row.aadhar_frontside_photo || "",
+      panCardUrl: item.panCard || row.pan_card || "",
+      candidatePhotoUrl: item.candidatePhoto || row.candidate_photo || "",
+      bankPassbookPhotoUrl: item.bankPassbookPhoto || row.photo_of_front_bank_passbook || "",
+      qualificationPhotoUrl: item.qualificationPhoto || row.qualification_photo || "",
+      salarySlipUrl: item.salarySlip || row.salary_slip || "",
+      resumeUploadUrl: item.resumeUpload || row.resume_cv_upload || "",
     });
     setShowEditModal(true);
   };
@@ -539,108 +652,97 @@ const Employee = () => {
         resumeUrl = await uploadFile(editFormData.resumeUploadFile, "1wofoM_7jVDj61UV1R5QoxSdQeJhZTOgJMaAOKEqrbvqO-5HUis6qoc3z65K2e2JDIPMZpC7q");
       }
 
-      // Joining details are stored in the "JOINING ENTRY FORM" sheet.
-      // Read it and locate this employee's row by Candidate Enquiry No.
-      // (row order differs from JOINING_FMS, so we must match by key, not row index).
-      const jefResponse = await fetch(
-        `${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=${encodeURIComponent("JOINING ENTRY FORM")}&_=${Date.now()}`
-      );
-      const jefJson = parseJsonSafely(await jefResponse.text(), { data: [] });
-      const jefData = jefJson.data || [];
-      const jefHeaders = jefData[0] || [];
+      // Update in Supabase joining_fms directly
+      if (editingItem && editingItem.dbId) {
+        const updatePayload = {
+          candidate_name: editFormData.candidateName,
+          name_as_per_aadhar: editFormData.candidateName,
+          father_name: editFormData.fatherName,
+          date_of_joining: editFormData.dateOfJoining,
+          joining_place: editFormData.joiningPlace,
+          designation: editFormData.designation,
+          salary: editFormData.salary,
+          current_address: editFormData.currentAddress,
+          address_as_per_aadhar_card: editFormData.addressAsPerAadhar,
+          dob_as_per_aadhar: editFormData.dobAsPerAadhar,
+          gender: editFormData.gender,
+          mobile_no: editFormData.mobileNo,
+          family_mobile_no: editFormData.familyMobileNo,
+          past_pf_id_no: editFormData.pastPfId,
+          current_bank_ac_no: editFormData.currentBankAcNo,
+          ifsc_code: editFormData.ifscCode,
+          branch_name: editFormData.branchName,
+          personal_email_id: editFormData.personalEmail,
+          esic_no: editFormData.esicNo,
+          highest_qualification: editFormData.highestQualification,
+          aadhar_card_no: editFormData.aadharCardNo,
+          aadhar_frontside_photo: aadharUrl,
+          pan_card: panUrl,
+          candidate_photo: photoUrl,
+          photo_of_front_bank_passbook: passbookUrl,
+          qualification_photo: qualUrl,
+          salary_slip: salarySlipUrl,
+          resume_cv_upload: resumeUrl,
+          updated_at: new Date().toISOString()
+        };
+        const { error: sbUpdateErr } = await supabase
+          .from("joining_fms")
+          .update(updatePayload)
+          .eq("id", editingItem.dbId);
+        if (sbUpdateErr) throw sbUpdateErr;
+      }
 
-      const getIndex = (names) => jefHeaders.findIndex(h => h && names.map(n => n.toLowerCase().trim()).includes(h.toString().trim().toLowerCase()));
+      // Optional legacy Google Sheet sync
+      try {
+        if (import.meta.env.VITE_JOINING_SHEET_URL) {
+          const jefResponse = await fetch(
+            `${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=${encodeURIComponent("JOINING ENTRY FORM")}&_=${Date.now()}`
+          );
+          const jefJson = parseJsonSafely(await jefResponse.text(), { data: [] });
+          const jefData = jefJson.data || [];
+          const jefHeaders = jefData[0] || [];
+          const getIndex = (names) => jefHeaders.findIndex(h => h && names.map(n => n.toLowerCase().trim()).includes(h.toString().trim().toLowerCase()));
+          const idxEnquiry = getIndex(["Candidate Enquiry No.", "Candidate Enquiry No", "Indent Number"]);
+          const targetKey = normalizeId(editingItem.employeeId);
 
-      const idxEnquiry = getIndex(["Candidate Enquiry No.", "Candidate Enquiry No", "Indent Number"]);
-      const targetKey = normalizeId(editingItem.employeeId);
+          let matchRow = -1;
+          for (let i = 1; i < jefData.length; i++) {
+            if (idxEnquiry !== -1 && normalizeId(jefData[i][idxEnquiry]) === targetKey && targetKey !== "") {
+              matchRow = i;
+              break;
+            }
+          }
+          if (matchRow !== -1) {
+            let updatedRow = [...jefData[matchRow]];
+            const writeVal = (idx, val) => { if (idx !== -1) updatedRow[idx] = val; };
+            writeVal(getIndex(["Name As per Aadhar", "Candidate Name", "Name"]), editFormData.candidateName);
+            writeVal(getIndex(["Father Name", "Father's Name"]), editFormData.fatherName);
+            writeVal(getIndex(["Joining Place"]), editFormData.joiningPlace);
+            writeVal(getIndex(["Designation"]), editFormData.designation);
+            writeVal(getIndex(["Salary"]), editFormData.salary);
+            writeVal(getIndex(["Mobile No.", "Contact No", "Mobile No", "Mobile Number"]), editFormData.mobileNo);
 
-      let matchRow = -1;
-      for (let i = 1; i < jefData.length; i++) {
-        if (idxEnquiry !== -1 && normalizeId(jefData[i][idxEnquiry]) === targetKey && targetKey !== "") {
-          matchRow = i;
-          break;
+            const payload = {
+              sheet: "JOINING ENTRY FORM",
+              action: "update",
+              rowNumber: matchRow + 1,
+              data: JSON.stringify(updatedRow)
+            };
+
+            await fetch(import.meta.env.VITE_JOINING_SHEET_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams(payload).toString(),
+            });
+          }
         }
-      }
-      if (matchRow === -1) {
-        throw new Error("Matching joining record not found in JOINING ENTRY FORM");
-      }
-
-      let updatedRow = [...jefData[matchRow]];
-
-      const writeVal = (idx, val) => {
-        if (idx !== -1) updatedRow[idx] = val;
-      };
-
-      writeVal(getIndex(["Name As per Aadhar", "Candidate Name", "Name"]), editFormData.candidateName);
-      writeVal(getIndex(["Father Name", "Father's Name"]), editFormData.fatherName);
-
-      if (editFormData.dateOfJoining) {
-        const d = new Date(editFormData.dateOfJoining);
-        writeVal(getIndex(["Date of Joining"]), `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`);
-      } else {
-        writeVal(getIndex(["Date of Joining"]), "");
+      } catch (sheetSyncErr) {
+        console.warn("Legacy sheet sync skipped:", sheetSyncErr);
       }
 
-      writeVal(getIndex(["Joining Place"]), editFormData.joiningPlace);
-      writeVal(getIndex(["Designation"]), editFormData.designation);
-      writeVal(getIndex(["Salary"]), editFormData.salary);
-      writeVal(getIndex(["Current Address"]), editFormData.currentAddress);
-      writeVal(getIndex(["Address  As per Aadhar Card", "Address As per Aadhar Card", "Address as per Aadhar"]), editFormData.addressAsPerAadhar);
-
-      if (editFormData.dobAsPerAadhar) {
-        const d = new Date(editFormData.dobAsPerAadhar);
-        writeVal(getIndex(["Date of Birth As Per Aadhar Card", "DOB as per Aadhar", "Date of Birth"]), `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`);
-      } else {
-        writeVal(getIndex(["Date of Birth As Per Aadhar Card", "DOB as per Aadhar", "Date of Birth"]), "");
-      }
-
-      writeVal(getIndex(["Gender"]), editFormData.gender);
-      writeVal(getIndex(["Mobile No.", "Contact No", "Mobile No", "Mobile Number"]), editFormData.mobileNo);
-      writeVal(getIndex(["Family Mobile No.", "Family Mobile No"]), editFormData.familyMobileNo);
-      writeVal(getIndex(["2 Reference No", "Two Reference No", "Reference"]), editFormData.twoReferenceNo);
-      writeVal(getIndex(["Past Pf Id No. (If Any)", "Past PF ID", "PF ID"]), editFormData.pastPfId);
-      writeVal(getIndex(["Current Bank AC No.", "Current Bank AC No", "Bank Account No"]), editFormData.currentBankAcNo);
-      writeVal(getIndex(["IFSC Code"]), editFormData.ifscCode);
-      writeVal(getIndex(["Branch Name"]), editFormData.branchName);
-      writeVal(getIndex(["Personal Email-Id", "Email Id", "Personal Email", "Email"]), editFormData.personalEmail);
-      writeVal(getIndex(["ESIC No (IF Any)", "ESIC No"]), editFormData.esicNo);
-      writeVal(getIndex(["Highest Qualification"]), editFormData.highestQualification);
-      writeVal(getIndex(["Aadhar Card No", "Aadhar No"]), editFormData.aadharCardNo);
-
-      writeVal(getIndex(["Aadhar Frontside photo", "Aadhar Front Photo", "Aadhar Photo"]), aadharUrl);
-      writeVal(getIndex(["Pan Card", "PAN Card"]), panUrl);
-      writeVal(getIndex(["Candidate Photo", "Profile Photo"]), photoUrl);
-      writeVal(getIndex(["Photo Of Front Bank Passbook", "Bank Passbook Photo"]), passbookUrl);
-      writeVal(getIndex(["Highest  Qualification Photo", "Highest Qualification Photo", "Qualification Photo"]), qualUrl);
-      writeVal(getIndex(["Salary Slip"]), salarySlipUrl);
-      writeVal(getIndex(["Resume/Cv Upload", "Resume Upload", "Resume"]), resumeUrl);
-
-      const payload = {
-        sheet: "JOINING ENTRY FORM",
-        action: "update",
-        rowNumber: matchRow + 1,
-        data: JSON.stringify(updatedRow)
-      };
-
-      const response = await fetch(
-        import.meta.env.VITE_JOINING_SHEET_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams(payload).toString(),
-        }
-      );
-
-      const result = await response.json();
-      if (result.success) {
-        toast.success("Employee updated successfully!");
-        setShowEditModal(false);
-        fetchData();
-      } else {
-        throw new Error(result.error || "Failed to update employee details");
-      }
+      toast.success("Employee updated successfully!");
+      setShowEditModal(false);
+      fetchData();
     } catch (err) {
       console.error(err);
       toast.error(err.message || "Something went wrong");
@@ -659,67 +761,85 @@ const Employee = () => {
     try {
       setSubmitting(true);
       const now = new Date();
-      // Format as dd/mm/yyyy
       const formattedTimestamp = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
-
-      // Format leaving date as dd/mm/yyyy
       const leavingDate = new Date(formData.dateOfLeaving);
       const formattedLeavingDate = `${String(leavingDate.getMonth() + 1).padStart(2, '0')}/${String(leavingDate.getDate()).padStart(2, '0')}/${leavingDate.getFullYear()}`;
 
-      // Construct row data matching specific indices for FMS sheet
-      // Index 5: ID, 6: Timestamp, 7: Last Working Day, 8: Reason, 9: Salary, 10: Name, 11: Designation, 12: Mobile, 27: Planned Date
-      const rowData = new Array(13).fill(""); // Create array up to index 12 (length 13)
+      // 1. Insert into Supabase leaving_fms
+      const leavingPayload = {
+        employee_id: selectedItem.employeeId,
+        timestamp: formattedTimestamp,
+        last_working_day: formData.dateOfLeaving,
+        reason_for_resignation: formData.reasonOfLeaving,
+        salary: formData.salary || selectedItem.salary || "",
+        candidate_name: selectedItem.candidateName || selectedItem.name || "",
+        designation: selectedItem.designation || "",
+        mobile_no: formData.mobileNumber || selectedItem.mobileNo || "",
+        family_mobile_no: selectedItem.familyMobileNo || "",
+        relationship_with_family_person: selectedItem.relationshipWithFamily || "",
+        past_pf_id_no: selectedItem.pastPfId || "",
+        current_bank_ac_no: selectedItem.currentBankAcNo || "",
+        ifsc_code: selectedItem.ifscCode || "",
+        branch_name: selectedItem.branchName || "",
+        photo_of_front_bank_passbook: selectedItem.bankPassbookPhoto || "",
+        personal_email_id: selectedItem.personalEmail || selectedItem.emailId || "",
+        esic_no: selectedItem.esicNo || "",
+        highest_qualification: selectedItem.highestQualification || "",
+        aadhar_card_no: selectedItem.aadharCardNo || "",
+        qualification_photo: selectedItem.qualificationPhoto || "",
+        salary_slip: selectedItem.salarySlip || "",
+        resume_cv_upload: selectedItem.resumeUpload || "",
+        leaving: "",
+        ex4_status: "Pending",
+        created_at: new Date().toISOString()
+      };
 
-      rowData[5] = selectedItem.employeeId;
-      rowData[6] = formattedTimestamp;
-      rowData[7] = formattedLeavingDate;
-      rowData[8] = formData.reasonOfLeaving;
-      rowData[9] = formData.salary;
-      rowData[10] = selectedItem.candidateName;
-      rowData[11] = selectedItem.designation;
-      rowData[12] = formData.mobileNumber;
+      const { error: sbLeavingErr } = await supabase.from("leaving_fms").insert([leavingPayload]);
+      if (sbLeavingErr) console.warn("Supabase leaving insert note:", sbLeavingErr.message);
 
+      // 2. Mark leaving in joining_fms
+      if (selectedItem.dbId) {
+        await supabase.from("joining_fms").update({ leave: "Yes" }).eq("id", selectedItem.dbId);
+      }
 
-      // Insert into FMS sheet via specific LEAVING URL
-      const insertParams = new URLSearchParams({
-        sheetName: 'FMS',
-        action: 'insert',
-        rowData: JSON.stringify(rowData),
-      });
-
-      const insertResponse = await fetch(import.meta.env.VITE_LEAVING_SHEET_URL, {
-        method: 'POST',
-        body: insertParams,
-      });
-
-      const insertText = await insertResponse.text();
-      let insertResult;
-
+      // 3. Optional legacy Google Sheet sync
       try {
-        insertResult = JSON.parse(insertText);
-      } catch (parseError) {
-        console.error('Failed to parse FMS insert response:', insertText);
-        throw new Error(`Server returned invalid response: ${insertText.substring(0, 100)}...`);
+        if (import.meta.env.VITE_LEAVING_SHEET_URL) {
+          const rowData = new Array(13).fill("");
+          rowData[5] = selectedItem.employeeId;
+          rowData[6] = formattedTimestamp;
+          rowData[7] = formattedLeavingDate;
+          rowData[8] = formData.reasonOfLeaving;
+          rowData[9] = formData.salary;
+          rowData[10] = selectedItem.candidateName;
+          rowData[11] = selectedItem.designation;
+          rowData[12] = formData.mobileNumber;
+
+          const insertParams = new URLSearchParams({
+            sheetName: 'FMS',
+            action: 'insert',
+            rowData: JSON.stringify(rowData),
+          });
+
+          await fetch(import.meta.env.VITE_LEAVING_SHEET_URL, {
+            method: 'POST',
+            body: insertParams,
+          });
+        }
+      } catch (sheetErr) {
+        console.warn("Legacy leaving sheet sync skipped:", sheetErr);
       }
 
-      if (insertResult.success) {
-        setFormData({
-          dateOfLeaving: '',
-          reasonOfLeaving: '',
-          salary: '',
-          mobileNumber: ''
-        });
-        setShowModal(false);
-        toast.success('Leaving details submitted successfully!');
-        setSelectedItem(null);
-
-        // Refresh global data to reflect changes if necessary
-        // fetchData();
-        // Refresh local data
-        fetchData();
-      } else {
-        throw new Error(insertResult.error || 'Failed to insert into FMS sheet');
-      }
+      setFormData({
+        dateOfLeaving: '',
+        reasonOfLeaving: '',
+        salary: '',
+        mobileNumber: ''
+      });
+      setShowModal(false);
+      toast.success('Leaving details submitted successfully!');
+      setSelectedItem(null);
+      fetchData();
     } catch (error) {
       console.error('Submit error:', error);
       toast.error('Something went wrong: ' + error.message);
@@ -807,570 +927,1534 @@ const Employee = () => {
     }
   };
 
+  const isFilterActive = Boolean(searchTerm || joiningPlaceFilter);
+
+  const clearAllFilters = () => {
+    setSearchTerm("");
+    setJoiningPlaceFilter("");
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between pb-4 border-b border-gray-100">
-        <div>
-          <h1 className="text-3xl font-black text-gray-800 tracking-tight">Employee Master</h1>
-          <p className="text-sm text-gray-500 font-medium mt-1">Manage all joining and leaving personnel</p>
+    <div className="p-3 sm:p-5 space-y-3 bg-[#f8fafc] min-h-screen text-xs antialiased text-slate-800">
+      
+      {/* Top Header Card */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        
+        {/* Navigation & Actions Top Bar */}
+        <div className="px-4 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-gradient-to-r from-slate-50/70 via-white to-slate-50/40">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-teal-600 to-emerald-500 flex items-center justify-center text-white shadow-xs shadow-teal-500/20">
+              <Users size={18} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-slate-900 tracking-tight">Employee Master Directory</h1>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-50 text-teal-700 border border-teal-200/80 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
+                  {activeTab === "joining" ? filteredJoiningData.length : filteredLeavingData.length} Personnel
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500">Manage all active joining and archived personnel records</p>
+            </div>
+          </div>
+
+          {/* Action Buttons & View Mode Toggle */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* View Mode Toggle */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80">
+              <button
+                onClick={() => setViewMode("table")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === "table" ? "bg-white text-slate-900 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Table List View"
+              >
+                <LayoutList size={13} />
+                <span>Table</span>
+              </button>
+              <button
+                onClick={() => setViewMode("grid")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === "grid" ? "bg-white text-slate-900 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Card Grid View"
+              >
+                <LayoutGrid size={13} />
+                <span>Cards</span>
+              </button>
+            </div>
+
+            {/* Refresh / Sync */}
+            <button
+              onClick={fetchData}
+              disabled={tableLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 rounded-xl text-xs font-semibold transition-all shadow-2xs active:scale-95 disabled:opacity-60 cursor-pointer"
+            >
+              <RefreshCw size={12} className={tableLoading ? "animate-spin text-teal-600" : "text-slate-500"} />
+              <span>{tableLoading ? "Syncing..." : "Sync"}</span>
+            </button>
+
+            {/* Export Excel */}
+            <button
+              onClick={handleExportExcelClick}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-all shadow-xs active:scale-95 cursor-pointer"
+            >
+              <Download size={13} />
+              <span>Export Excel</span>
+            </button>
+          </div>
         </div>
-        <button
-          onClick={handleExportExcelClick}
-          className="flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg shadow-sm transition-colors duration-200"
-        >
-          <Download size={18} className="mr-2" />
-          Export Excel
-        </button>
+
+        {/* Quick Status Tabs Sub-bar */}
+        <div className="px-4 py-2 bg-slate-50/50 flex items-center gap-2 overflow-x-auto border-t border-slate-100">
+          <button
+            onClick={() => setActiveTab("joining")}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap cursor-pointer border ${
+              activeTab === "joining"
+                ? "bg-emerald-700 text-white border-emerald-700 shadow-xs font-bold"
+                : "bg-white border-slate-200/80 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${activeTab === "joining" ? "bg-emerald-300" : "bg-emerald-500"}`}></span>
+            <span>Active / Joining</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+              activeTab === "joining" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-700"
+            }`}>
+              {joiningData.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("leaving")}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap cursor-pointer border ${
+              activeTab === "leaving"
+                ? "bg-emerald-700 text-white border-emerald-700 shadow-xs font-bold"
+                : "bg-white border-slate-200/80 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${activeTab === "leaving" ? "bg-rose-300" : "bg-rose-500"}`}></span>
+            <span>Archived / Leaving</span>
+            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+              activeTab === "leaving" ? "bg-white/20 text-white" : "bg-slate-100 text-slate-700"
+            }`}>
+              {leavingData.length}
+            </span>
+          </button>
+        </div>
       </div>
 
-      <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0 md:space-x-4">
-        <div className="flex flex-1 max-w-md">
-          <div className="relative w-full">
+      {/* Team Stories & Quick Profiles Section (Interactive Story Carousel) */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-3.5 sm:p-4 shadow-xs overflow-hidden">
+        {/* Header line */}
+        <div className="flex items-center justify-between gap-2 mb-3 px-1">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-teal-500 animate-pulse" />
+            <h2 className="text-xs font-extrabold uppercase tracking-wider text-slate-800">
+              Team Stories & Quick Profiles
+            </h2>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200/80 font-mono">
+              {activeTab === "joining" ? filteredJoiningData.length : filteredLeavingData.length} Personnel
+            </span>
+          </div>
+          <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+            Click circle to view full profile details
+          </span>
+        </div>
+
+        {/* Stories Horizontal Scroll Carousel */}
+        <div className="flex items-center gap-3.5 sm:gap-4.5 overflow-x-auto custom-scrollbar pb-1 pt-1 px-1">
+          {/* Quick Add / Focus Overview Icon */}
+          <div className="flex flex-col items-center gap-1.5 shrink-0 group cursor-default">
+            <div className="w-14 h-14 sm:w-15 sm:h-15 rounded-full border-2 border-dashed border-teal-400/80 flex items-center justify-center bg-teal-50/50 group-hover:bg-teal-50 group-hover:border-teal-500 transition-all">
+              <Sparkles size={20} className="text-teal-600 group-hover:rotate-12 transition-transform" />
+            </div>
+            <div className="text-center">
+              <p className="text-[11px] font-bold text-slate-800 leading-tight">All Team</p>
+              <p className="text-[9.5px] text-slate-400 leading-tight">Overview</p>
+            </div>
+          </div>
+
+          {/* Employee Story Circles */}
+          {(activeTab === "joining" ? filteredJoiningData : filteredLeavingData).map((item, index) => {
+            const displayName = (item.candidateName || item.name || "Employee").split(" ")[0];
+            const displayRole = item.designation || "Member";
+            const isLeaving = activeTab === "leaving";
+
+            return (
+              <button
+                key={index}
+                type="button"
+                onClick={() => handleViewProfile(item)}
+                className="flex flex-col items-center gap-1.5 shrink-0 group cursor-pointer focus:outline-none transition-transform active:scale-95"
+                title={`Click to view ${item.candidateName || item.name}'s complete details`}
+              >
+                {/* Story Ring Avatar */}
+                <div className="relative">
+                  <div className={`w-14 h-14 sm:w-15 sm:h-15 rounded-full p-0.5 transition-all duration-300 group-hover:scale-105 shadow-xs ${
+                    isLeaving
+                      ? "bg-gradient-to-tr from-rose-400 to-amber-400 group-hover:shadow-md group-hover:shadow-rose-400/30"
+                      : "bg-gradient-to-tr from-teal-500 via-emerald-400 to-indigo-500 group-hover:shadow-md group-hover:shadow-teal-500/30"
+                  }`}>
+                    <div className="w-full h-full rounded-full bg-white p-0.5 overflow-hidden">
+                      {item.candidatePhoto ? (
+                        <img
+                          src={getDriveImageUrl(item.candidatePhoto, 140)}
+                          alt={item.candidateName || item.name}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover object-top rounded-full"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.style.display = 'none';
+                            if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div className={`w-full h-full bg-gradient-to-tr ${getAvatarGradient(item.candidateName || item.name)} text-white font-bold text-xs rounded-full flex items-center justify-center ${item.candidatePhoto ? 'hidden' : 'flex'}`}>
+                        {getInitials(item.candidateName || item.name)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Active / Status Dot */}
+                  <span className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full ring-2 ring-white shadow-xs ${
+                    isLeaving ? "bg-rose-500" : "bg-emerald-500 animate-pulse"
+                  }`} />
+                </div>
+
+                {/* Name & Role Text */}
+                <div className="text-center max-w-[68px] sm:max-w-[74px]">
+                  <p className="text-[11.5px] font-bold text-slate-800 group-hover:text-teal-700 transition-colors truncate leading-tight">
+                    {displayName}
+                  </p>
+                  <p className="text-[9.5px] text-slate-400 truncate leading-tight mt-0.5 font-medium">
+                    {displayRole}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-3 shadow-xs flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[280px]">
+          
+          {/* Search Input */}
+          <div className="relative min-w-[240px] flex-1 sm:flex-initial">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               placeholder="Search by name, ID, or designation..."
-              className="w-full pl-11 pr-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-gray-50 text-gray-800 font-medium transition-all"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:bg-white focus:border-teal-500 transition-all font-medium"
             />
-            <Search
-              size={20}
-              className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"
-            />
-          </div>
-        </div>
-
-        {activeTab === "joining" && (
-          <div className="flex items-center space-x-2">
-            <Filter size={20} className="text-gray-500" />
-            <select
-              className="border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-600 bg-white text-gray-500 text-sm"
-              value={joiningPlaceFilter}
-              onChange={(e) => setJoiningPlaceFilter(e.target.value)}
-            >
-              <option value="">All Joining Places</option>
-              {joiningPlaces.map((place, index) => (
-                <option key={index} value={place}>
-                  {place}
-                </option>
-              ))}
-            </select>
-            {joiningPlaceFilter && (
+            {searchTerm && (
               <button
-                onClick={() => setJoiningPlaceFilter("")}
-                className="p-2 text-gray-500 hover:text-red-500"
-                title="Clear filter"
+                onClick={() => setSearchTerm("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
               >
-                <X size={16} />
+                <X size={12} />
               </button>
             )}
           </div>
+
+          {/* Joining Place Filter */}
+          {activeTab === "joining" && (
+            <div className="relative">
+              <select
+                value={joiningPlaceFilter}
+                onChange={(e) => setJoiningPlaceFilter(e.target.value)}
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 outline-none focus:bg-white focus:border-teal-500 font-medium cursor-pointer"
+              >
+                <option value="">All Joining Places</option>
+                {joiningPlaces.map((place, index) => (
+                  <option key={index} value={place}>
+                    📍 {place}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Clear Filters Button */}
+          {isFilterActive && (
+            <button
+              onClick={clearAllFilters}
+              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer border border-rose-200"
+            >
+              <X size={11} />
+              <span>Reset Filters</span>
+            </button>
+          )}
+        </div>
+
+        {/* Count summary indicator */}
+        <div className="text-[11px] text-slate-500 font-medium">
+          Showing <span className="font-bold text-slate-800">{activeTab === "joining" ? filteredJoiningData.length : filteredLeavingData.length}</span> records
+        </div>
+      </div>
+
+      {/* Main Table / Grid Content Card */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        
+        {activeTab === "joining" && (
+          <>
+            {viewMode === "table" ? (
+              <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-230px)] table-container">
+                <table className="w-full text-left border-collapse min-w-[950px]">
+                  <thead className="bg-slate-50/90 backdrop-blur-xs sticky top-0 z-10 border-b border-slate-200">
+                    <tr>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Profile & Name</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Employee ID</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Designation & Dept</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Joining Date</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Joining Location</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Documents</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white text-xs">
+                    {tableLoading ? (
+                      <tr>
+                        <td colSpan="7" className="px-6 py-16 text-center">
+                          <div className="flex justify-center flex-col items-center">
+                            <div className="w-8 h-8 border-3 border-teal-200 border-t-teal-600 rounded-full animate-spin mb-3"></div>
+                            <span className="text-slate-500 font-medium">Loading employee directory...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : error ? (
+                      <tr>
+                        <td colSpan="7" className="px-6 py-12 text-center">
+                          <div className="bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-xl inline-block">
+                            <p className="font-semibold mb-1">Error loading employee data</p>
+                            <p className="text-xs text-rose-600 mb-2">{error}</p>
+                            <button onClick={fetchData} className="px-3 py-1 bg-rose-600 text-white font-bold rounded-lg hover:bg-rose-700 transition-colors text-xs">Retry</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : filteredJoiningData.length === 0 ? (
+                      <tr>
+                        <td colSpan="7" className="px-6 py-12 text-center text-slate-400">
+                          <Users size={28} className="mx-auto mb-2 text-slate-300" />
+                          <p className="font-bold text-slate-600">No active employees found</p>
+                          <p className="text-[11px]">Try adjusting your search query or filter</p>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredJoiningData.map((item, index) => (
+                        <tr
+                          key={index}
+                          onClick={() => handleViewProfile(item)}
+                          className="hover:bg-indigo-50/60 transition-colors group cursor-pointer"
+                        >
+                          {/* Profile & Name */}
+                          <td className="px-3.5 py-2.5">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center border border-slate-200 shadow-2xs shrink-0 bg-slate-100">
+                                {item.candidatePhoto ? (
+                                  <img
+                                    src={getDriveImageUrl(item.candidatePhoto, 120)}
+                                    alt={item.candidateName}
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      e.target.onerror = null;
+                                      e.target.style.display = 'none';
+                                      if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                                    }}
+                                  />
+                                ) : null}
+                                <div className={`w-full h-full bg-gradient-to-tr ${getAvatarGradient(item.candidateName)} text-white font-bold text-[11px] flex items-center justify-center ${item.candidatePhoto ? 'hidden' : 'flex'}`}>
+                                  {getInitials(item.candidateName)}
+                                </div>
+                              </div>
+                              <div>
+                                <p className="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-tight">
+                                  {item.candidateName}
+                                </p>
+                                {item.fatherName && item.fatherName !== "N/A" && item.fatherName !== "na" && (
+                                  <p className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                    <User size={10} /> C/O {item.fatherName}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Employee ID */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            <span className="font-mono font-bold text-indigo-700 bg-indigo-50/80 border border-indigo-200/60 px-2 py-0.5 rounded-md text-[11px]">
+                              {item.employeeId || "-"}
+                            </span>
+                          </td>
+
+                          {/* Designation & Dept */}
+                          <td className="px-3.5 py-2.5">
+                            <p className="font-semibold text-slate-800 flex items-center gap-1.5 leading-tight">
+                              <Briefcase size={12} className="text-slate-400 shrink-0" />
+                              <span>{item.designation || 'N/A'}</span>
+                            </p>
+                            {item.department && item.department !== "N/A" && item.department !== "na" && (
+                              <p className="text-[10px] text-slate-400 mt-0.5 pl-4">{item.department}</p>
+                            )}
+                          </td>
+
+                          {/* Joining Date */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5 text-slate-700 font-medium">
+                              <Calendar size={12} className="text-teal-600 shrink-0" />
+                              <span>{item.dateOfJoining ? formatDOB(item.dateOfJoining) : "-"}</span>
+                            </div>
+                          </td>
+
+                          {/* Location */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-sky-50 text-sky-700 border border-sky-200/80">
+                              <MapPin size={11} />
+                              <span>{item.joiningPlace || 'N/A'}</span>
+                            </span>
+                          </td>
+
+                          {/* Documents */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            {item.aadharPhoto ? (
+                              <a
+                                href={item.aadharPhoto}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-50 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-lg text-[11px] font-semibold transition-colors border border-slate-200"
+                              >
+                                <FileText size={12} className="text-indigo-600" />
+                                <span>Aadhar</span>
+                              </a>
+                            ) : (
+                              <span className="text-slate-400 text-[10px] bg-slate-50 px-2 py-0.5 rounded border border-slate-100">No doc</span>
+                            )}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleViewProfile(item);
+                                }}
+                                title="View Complete Details"
+                                className="p-1.5 text-xs bg-white border border-slate-200 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300 font-bold rounded-lg transition-colors shadow-2xs cursor-pointer inline-flex items-center justify-center"
+                              >
+                                <Eye size={14} />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditClick(item);
+                                }}
+                                className="px-2.5 py-1 text-xs bg-white border border-indigo-200 text-indigo-700 font-bold rounded-lg hover:bg-indigo-50 hover:border-indigo-300 transition-colors shadow-2xs cursor-pointer"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={(e) => handleLeaveClick(e, item)}
+                                className="px-2.5 py-1 text-xs bg-white border border-rose-200 text-rose-700 font-bold rounded-lg hover:bg-rose-50 hover:border-rose-300 transition-colors shadow-2xs cursor-pointer"
+                              >
+                                Mark Leave
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              /* Card Grid View (Ultra Premium Edition) */
+              <div className="p-4 sm:p-5 max-h-[calc(100vh-230px)] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-4.5">
+                  {filteredJoiningData.map((item, index) => (
+                    <div
+                      key={index}
+                      onClick={() => handleViewProfile(item)}
+                      className="group relative bg-white rounded-2xl border border-slate-200/90 hover:border-teal-400/80 p-4 sm:p-4.5 hover:shadow-xl hover:shadow-teal-900/5 transition-all duration-300 cursor-pointer flex flex-col justify-between overflow-hidden hover:-translate-y-1"
+                    >
+                      {/* Top Glowing Ambient Accent */}
+                      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-teal-500 via-emerald-400 to-indigo-600 opacity-90 group-hover:opacity-100 transition-opacity" />
+                      <div className="pointer-events-none absolute -right-8 -top-8 w-24 h-24 bg-gradient-to-br from-teal-500/10 via-emerald-500/5 to-transparent rounded-full blur-xl group-hover:scale-150 transition-transform duration-500" />
+
+                      {/* Header Row: Avatar + Employee ID & Active Status */}
+                      <div>
+                        <div className="flex items-start justify-between gap-3 mb-3">
+                          {/* Avatar with Status Ring */}
+                          <div className="relative shrink-0">
+                            <div className="w-13 h-13 rounded-2xl bg-slate-100 p-0.5 shadow-xs border border-slate-200/90 overflow-hidden group-hover:border-teal-400 group-hover:shadow-md transition-all duration-300">
+                              {item.candidatePhoto ? (
+                                <img
+                                  src={getDriveImageUrl(item.candidatePhoto, 180)}
+                                  alt={item.candidateName}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover object-top rounded-[13px]"
+                                  onError={(e) => {
+                                    e.target.onerror = null;
+                                    e.target.style.display = 'none';
+                                    if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                                  }}
+                                />
+                              ) : null}
+                              <div className={`w-full h-full bg-gradient-to-tr ${getAvatarGradient(item.candidateName)} text-white font-extrabold text-sm rounded-[13px] flex items-center justify-center ${item.candidatePhoto ? 'hidden' : 'flex'}`}>
+                                {getInitials(item.candidateName)}
+                              </div>
+                            </div>
+                            <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-white shadow-2xs animate-pulse" title="Active Employee" />
+                          </div>
+
+                          {/* ID & Status Chip */}
+                          <div className="flex flex-col items-end gap-1.5">
+                            <span className="font-mono font-bold text-slate-700 bg-slate-50 border border-slate-200/90 px-2 py-0.5 rounded-lg text-[10px] tracking-wide shadow-2xs group-hover:bg-teal-50 group-hover:text-teal-800 group-hover:border-teal-200 transition-colors">
+                              {item.employeeId || 'ID N/A'}
+                            </span>
+                            <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50/90 px-2 py-0.5 rounded-full border border-emerald-200/70">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              <span>Active</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Name & Guardian */}
+                        <div className="space-y-0.5">
+                          <h3 className="font-bold text-slate-900 group-hover:text-teal-700 transition-colors text-[14px] tracking-tight line-clamp-1">
+                            {item.candidateName}
+                          </h3>
+                          {item.fatherName && item.fatherName !== "N/A" && (
+                            <p className="text-[10.5px] font-medium text-slate-400 truncate flex items-center gap-1">
+                              <User size={10} className="text-slate-400 shrink-0" />
+                              <span>C/O {item.fatherName}</span>
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Designation Pill */}
+                        <div className="mt-2.5">
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-gradient-to-r from-teal-50/80 via-emerald-50/50 to-teal-50/80 text-teal-900 font-bold text-[11px] border border-teal-200/60 max-w-full truncate shadow-2xs">
+                            <Briefcase size={12} className="text-teal-600 shrink-0" />
+                            <span className="truncate">{item.designation || 'Role N/A'}</span>
+                          </div>
+                        </div>
+
+                        {/* Info Tiles Section */}
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5 text-xs">
+                          {/* Joining Date */}
+                          <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-slate-50/70 border border-slate-100">
+                            <div className="flex items-center gap-1.5 text-slate-500 font-medium">
+                              <Calendar size={12} className="text-teal-600 shrink-0" />
+                              <span>Joined</span>
+                            </div>
+                            <span className="font-semibold text-slate-800">{item.dateOfJoining ? formatDOB(item.dateOfJoining) : "-"}</span>
+                          </div>
+
+                          {/* Location */}
+                          <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-slate-50/70 border border-slate-100">
+                            <div className="flex items-center gap-1.5 text-slate-500 font-medium">
+                              <MapPin size={12} className="text-sky-600 shrink-0" />
+                              <span>Location</span>
+                            </div>
+                            <span className="font-semibold text-slate-800 truncate max-w-[120px]">{item.joiningPlace || 'Raipur'}</span>
+                          </div>
+
+                          {/* Contact or KYC Doc Info */}
+                          {item.mobileNo ? (
+                            <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-slate-50/70 border border-slate-100">
+                              <div className="flex items-center gap-1.5 text-slate-500 font-medium">
+                                <Phone size={12} className="text-amber-600 shrink-0" />
+                                <span>Phone</span>
+                              </div>
+                              <span className="font-mono font-semibold text-slate-700">{item.mobileNo}</span>
+                            </div>
+                          ) : item.aadharPhoto ? (
+                            <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-indigo-50/40 border border-indigo-100/60">
+                              <div className="flex items-center gap-1.5 text-indigo-600 font-medium">
+                                <FileText size={12} className="text-indigo-600 shrink-0" />
+                                <span>Document</span>
+                              </div>
+                              <span className="font-semibold text-indigo-700">Aadhar Available</span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {/* Bottom Action Footer */}
+                      <div className="mt-3.5 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                        {/* Primary View Profile Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewProfile(item);
+                          }}
+                          className="flex-1 py-1.5 px-2.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white rounded-xl text-[11.5px] font-bold shadow-xs shadow-teal-600/20 flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
+                          title="View Complete Profile Dossier"
+                        >
+                          <Eye size={13} />
+                          <span>View</span>
+                        </button>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditClick(item);
+                            }}
+                            className="px-2.5 py-1.5 text-[11px] font-bold text-slate-700 bg-slate-50 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-300 rounded-xl border border-slate-200/90 transition-all shadow-2xs cursor-pointer"
+                            title="Edit Employee Details"
+                          >
+                            <Edit size={11} className="inline mr-1" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleLeaveClick(e, item);
+                            }}
+                            className="px-2.5 py-1.5 text-[11px] font-bold text-rose-700 bg-rose-50/70 hover:bg-rose-100 hover:border-rose-300 rounded-xl border border-rose-200/80 transition-all shadow-2xs cursor-pointer"
+                            title="Mark as Left / Archive"
+                          >
+                            Leave
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === "leaving" && (
+          <>
+            {viewMode === "table" ? (
+              <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-230px)] table-container">
+                <table className="w-full text-left border-collapse min-w-[950px]">
+                  <thead className="bg-slate-50/90 backdrop-blur-xs sticky top-0 z-10 border-b border-slate-200">
+                    <tr>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Archived Profile</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Employee ID</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Role & Details</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Duration</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Contact</th>
+                      <th className="px-3.5 py-2.5 text-[11px] font-bold text-slate-600 uppercase tracking-wider">Reason for Leaving</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white text-xs">
+                    {tableLoading ? (
+                      <tr>
+                        <td colSpan="6" className="px-6 py-16 text-center">
+                          <div className="flex justify-center flex-col items-center">
+                            <div className="w-8 h-8 border-3 border-rose-200 border-t-rose-600 rounded-full animate-spin mb-3"></div>
+                            <span className="text-slate-500 font-medium">Loading archived personnel...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : error ? (
+                      <tr>
+                        <td colSpan="6" className="px-6 py-12 text-center">
+                          <div className="bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-xl inline-block">
+                            <p className="font-semibold mb-1">Error loading archived records</p>
+                            <p className="text-xs text-rose-600 mb-2">{error}</p>
+                            <button onClick={fetchData} className="px-3 py-1 bg-rose-600 text-white font-bold rounded-lg hover:bg-rose-700 transition-colors text-xs">Retry</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : filteredLeavingData.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="px-6 py-12 text-center text-slate-400">
+                          <Users size={28} className="mx-auto mb-2 text-slate-300" />
+                          <p className="font-bold text-slate-600">No archived records found</p>
+                          <p className="text-[11px]">No leaving personnel records match criteria</p>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredLeavingData.map((item, index) => (
+                        <tr
+                          key={index}
+                          onClick={() => handleViewProfile(item)}
+                          className="hover:bg-rose-50/50 transition-colors group cursor-pointer"
+                        >
+                          {/* Profile */}
+                          <td className="px-3.5 py-2.5">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center border border-slate-200 shadow-2xs shrink-0 bg-slate-100 grayscale opacity-80">
+                                {item.candidatePhoto ? (
+                                  <img
+                                    src={getDriveImageUrl(item.candidatePhoto, 120)}
+                                    alt={item.name}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      e.target.onerror = null;
+                                      e.target.style.display = 'none';
+                                      if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                                    }}
+                                  />
+                                ) : null}
+                                <div className="w-full h-full bg-slate-400 text-white font-bold text-[11px] flex items-center justify-center">
+                                  {getInitials(item.name)}
+                                </div>
+                              </div>
+                              <div>
+                                <p className="font-bold text-slate-700 line-through decoration-rose-400 opacity-80 leading-tight">
+                                  {item.name}
+                                </p>
+                                <span className="text-[9px] font-bold uppercase text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-100 inline-block mt-0.5">
+                                  Left
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Employee ID */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            <span className="font-mono font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md text-[11px] opacity-80">
+                              {item.employeeId || "-"}
+                            </span>
+                          </td>
+
+                          {/* Role & Dept */}
+                          <td className="px-3.5 py-2.5">
+                            <p className="font-semibold text-slate-700 flex items-center gap-1.5 leading-tight">
+                              <Briefcase size={12} className="text-slate-400" />
+                              <span>{item.designation || 'N/A'}</span>
+                            </p>
+                            {item.department && <p className="text-[10px] text-slate-400 pl-4 mt-0.5">{item.department}</p>}
+                          </td>
+
+                          {/* Duration */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap">
+                            <div className="flex flex-col gap-1">
+                              {item.dateOfJoining && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200/60 w-fit">
+                                  <span className="font-bold">Joined:</span> {formatDOB(item.dateOfJoining)}
+                                </span>
+                              )}
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200/60 w-fit">
+                                <span className="font-bold">Left:</span> {item.dateOfLeaving ? formatDOB(item.dateOfLeaving) : 'N/A'}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Contact */}
+                          <td className="px-3.5 py-2.5 whitespace-nowrap font-medium text-slate-600">
+                            <span className="flex items-center gap-1">
+                              <Phone size={11} className="text-slate-400" />
+                              {item.mobileNo || '-'}
+                            </span>
+                          </td>
+
+                          {/* Reason */}
+                          <td className="px-3.5 py-2.5">
+                            <p className="text-[11px] text-slate-600 italic border-l-2 border-rose-300 pl-2.5 py-0.5 bg-slate-50/80 rounded-r-md max-w-xs truncate" title={item.reasonOfLeaving}>
+                              "{item.reasonOfLeaving || 'No reason specified'}"
+                            </p>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              /* Archived Cards Grid View */
+              <div className="p-4 sm:p-5 max-h-[calc(100vh-230px)] overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-4.5">
+                  {filteredLeavingData.map((item, index) => (
+                    <div
+                      key={index}
+                      onClick={() => handleViewProfile(item)}
+                      className="group relative bg-white rounded-2xl border border-slate-200/90 hover:border-rose-300 p-4 sm:p-4.5 hover:shadow-xl hover:shadow-rose-900/5 transition-all duration-300 cursor-pointer flex flex-col justify-between overflow-hidden hover:-translate-y-1"
+                    >
+                      <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-400 via-rose-500 to-amber-500 opacity-80" />
+                      
+                      <div>
+                        <div className="flex items-start justify-between gap-3 mb-3">
+                          <div className="w-13 h-13 rounded-2xl bg-slate-100 p-0.5 shadow-xs border border-slate-200/90 overflow-hidden shrink-0 grayscale opacity-85">
+                            {item.candidatePhoto ? (
+                              <img
+                                src={getDriveImageUrl(item.candidatePhoto, 180)}
+                                alt={item.name}
+                                className="w-full h-full object-cover object-top rounded-[13px]"
+                                onError={(e) => {
+                                  e.target.onerror = null;
+                                  e.target.style.display = 'none';
+                                  if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                                }}
+                              />
+                            ) : null}
+                            <div className="w-full h-full bg-slate-400 text-white font-extrabold text-sm rounded-[13px] flex items-center justify-center">
+                              {getInitials(item.name)}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-1.5">
+                            <span className="font-mono font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg text-[10px]">
+                              {item.employeeId || 'ID N/A'}
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200/70">
+                              Archived
+                            </span>
+                          </div>
+                        </div>
+
+                        <h3 className="font-bold text-slate-800 line-through decoration-rose-400 text-[14px] tracking-tight line-clamp-1">
+                          {item.name}
+                        </h3>
+
+                        <div className="mt-2.5">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100 text-slate-700 font-bold text-[11px] border border-slate-200 max-w-full truncate">
+                            <Briefcase size={12} className="text-slate-400 shrink-0" />
+                            <span className="truncate">{item.designation || 'Role N/A'}</span>
+                          </span>
+                        </div>
+
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-rose-50/50 border border-rose-100">
+                            <span className="text-slate-500 font-medium">Left On</span>
+                            <span className="font-bold text-rose-700">{item.dateOfLeaving ? formatDOB(item.dateOfLeaving) : 'N/A'}</span>
+                          </div>
+                          {item.reasonOfLeaving && (
+                            <div className="text-[11px] px-2 py-1 rounded-lg bg-slate-50 text-slate-600 italic truncate border border-slate-100">
+                              "{item.reasonOfLeaving}"
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-3.5 pt-2.5 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewProfile(item);
+                          }}
+                          className="w-full py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Eye size={13} />
+                          <span>View Archived Dossier</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="border-b border-gray-200 bg-gray-50/50">
-          <nav className="flex px-4 pt-4 gap-4">
-            <button
-              className={`py-3 px-6 font-bold text-sm rounded-t-xl transition-all flex items-center ${activeTab === "joining"
-                ? "bg-white text-indigo-700 border-t border-l border-r border-gray-200 shadow-[0_4px_0_0_white]"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50 border border-transparent"
-                }`}
-              onClick={() => setActiveTab("joining")}
-            >
-              <CheckCircle size={18} className={`mr-2 ${activeTab === "joining" ? "text-indigo-500" : "text-gray-400"}`} />
-              Active / Joining <span className={`ml-2 px-2.5 py-0.5 rounded-full text-xs ${activeTab === "joining" ? "bg-indigo-100 text-indigo-700" : "bg-gray-200 text-gray-600"}`}>{filteredJoiningData.length}</span>
-            </button>
-            <button
-              className={`py-3 px-6 font-bold text-sm rounded-t-xl transition-all flex items-center ${activeTab === "leaving"
-                ? "bg-white text-indigo-700 border-t border-l border-r border-gray-200 shadow-[0_4px_0_0_white]"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50 border border-transparent"
-                }`}
-              onClick={() => setActiveTab("leaving")}
-            >
-              <Clock size={18} className={`mr-2 ${activeTab === "leaving" ? "text-rose-500" : "text-gray-400"}`} />
-              Archived / Leaving <span className={`ml-2 px-2.5 py-0.5 rounded-full text-xs ${activeTab === "leaving" ? "bg-rose-100 text-rose-700" : "bg-gray-200 text-gray-600"}`}>{filteredLeavingData.length}</span>
-            </button>
-          </nav>
-        </div>
-
-        <div className="p-6">
-          {activeTab === "joining" && (
-            <div className="overflow-x-auto table-container">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider rounded-tl-lg">Profile</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Employee ID</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Details</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Joining Date</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Location</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Documents</th>
-                    <th className="px-4 py-4 text-right text-xs font-bold text-gray-500 uppercase tracking-wider rounded-tr-lg">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 bg-white">
-                  {tableLoading ? (
-                    <tr>
-                      <td colSpan="7" className="px-6 py-16 text-center">
-                        <div className="flex justify-center flex-col items-center">
-                          <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                          <span className="text-gray-500 font-medium">Loading employee master data...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : error ? (
-                    <tr>
-                      <td colSpan="7" className="px-6 py-12 text-center">
-                        <div className="bg-red-50 text-red-600 p-4 rounded-xl inline-block">
-                          <p className="font-semibold mb-2">Error loading data</p>
-                          <p className="text-sm">{error}</p>
-                          <button onClick={fetchData} className="mt-3 px-4 py-2 bg-red-100 text-red-700 font-bold rounded-lg hover:bg-red-200 transition">Retry</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredJoiningData.map((item, index) => (
-                      <tr key={index} onClick={() => handleViewProfile(item)} className="hover:bg-indigo-50/80 transition-colors group cursor-pointer">
-                        <td className="px-4 py-4 min-w-[200px]">
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 rounded-full bg-indigo-100 overflow-hidden flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0">
-                              {item.candidatePhoto ? (
-                                <img src={getDriveImageUrl(item.candidatePhoto)} alt={item.candidateName} className="w-full h-full object-contain bg-white" onError={(e) => { e.target.onerror = null; e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
-                              ) : null}
-                              <User size={24} className={`text-indigo-400 ${item.candidatePhoto ? 'hidden' : 'block'}`} />
-                            </div>
-                            <div>
-                              <p className="font-bold text-gray-800">{item.candidateName}</p>
-                              {item.fatherName && item.fatherName !== "N/A" && item.fatherName !== "na" && (
-                                <p className="text-xs text-gray-500 flex items-center mt-1"><User size={12} className="mr-1" /> C/O {item.fatherName}</p>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <span className="font-bold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md text-sm">{item.employeeId}</span>
-                        </td>
-                        <td className="px-4 py-4 min-w-[150px]">
-                          <p className="text-sm font-semibold text-gray-700 flex items-center"><Briefcase size={14} className="mr-1.5 text-gray-400"/>{item.designation || 'N/A'}</p>
-                          {item.department && item.department !== "N/A" && item.department !== "na" && (
-                            <p className="text-xs text-gray-500 mt-1">{item.department}</p>
-                          )}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div className="flex items-center text-sm font-medium text-gray-600">
-                            <Calendar size={14} className="mr-2 text-indigo-400" />
-                            {item.dateOfJoining ? formatDOB(item.dateOfJoining) : "-"}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 min-w-[150px]">
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100">
-                            <MapPin size={12} className="mr-1" />
-                            {item.joiningPlace || 'N/A'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          {item.aadharPhoto ? (
-                            <a href={item.aadharPhoto} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-lg text-xs font-bold transition-colors">
-                              <FileText size={14} />
-                              Aadhar
-                            </a>
-                          ) : (
-                            <span className="text-gray-400 text-xs font-medium bg-gray-50 px-2 py-1 rounded">No doc</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-right">
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditClick(item);
-                              }}
-                              className="px-3 py-1.5 text-sm bg-white border-2 border-indigo-200 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 hover:border-indigo-300 transition-colors shadow-sm"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={(e) => handleLeaveClick(e, item)}
-                              className="px-3 py-1.5 text-sm bg-white border-2 border-rose-200 text-rose-600 font-bold rounded-xl hover:bg-rose-50 hover:border-rose-300 transition-colors shadow-sm"
-                            >
-                              Mark Leave
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-              {!tableLoading && filteredJoiningData.length === 0 && (
-                <div className="px-6 py-12 text-center">
-                  <p className="text-gray-500 ">
-                    No joining employees found.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === "leaving" && (
-            <div className="overflow-x-auto table-container">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider rounded-tl-lg">Profile</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Employee ID</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Role & Details</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Duration</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Contact</th>
-                    <th className="px-4 py-4 text-left text-xs font-bold text-gray-500 uppercase tracking-wider rounded-tr-lg">Reason for Leaving</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 bg-white">
-                  {tableLoading ? (
-                    <tr>
-                      <td colSpan="6" className="px-6 py-16 text-center">
-                        <div className="flex justify-center flex-col items-center">
-                          <div className="w-8 h-8 border-4 border-rose-200 border-t-rose-600 rounded-full animate-spin mb-4"></div>
-                          <span className="text-gray-500 font-medium">Loading archived records...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : error ? (
-                    <tr>
-                      <td colSpan="6" className="px-6 py-12 text-center">
-                        <div className="bg-red-50 text-red-600 p-4 rounded-xl inline-block">
-                          <p className="font-semibold mb-2">Error loading data</p>
-                          <p className="text-sm">{error}</p>
-                          <button onClick={fetchData} className="mt-3 px-4 py-2 bg-red-100 text-red-700 font-bold rounded-lg hover:bg-red-200 transition">Retry</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredLeavingData.map((item, index) => (
-                      <tr key={index} onClick={() => handleViewProfile(item)} className="hover:bg-rose-50/80 transition-colors group cursor-pointer">
-                        <td className="px-4 py-4 min-w-[200px]">
-                          <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-full bg-gray-100 overflow-hidden flex items-center justify-center border-2 border-white shadow-sm flex-shrink-0">
-                              {item.candidatePhoto ? (
-                                <img src={getDriveImageUrl(item.candidatePhoto)} alt={item.name} className="w-full h-full object-contain bg-white grayscale" onError={(e) => { e.target.onerror = null; e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
-                              ) : null}
-                              <User size={20} className={`text-gray-400 ${item.candidatePhoto ? 'hidden' : 'block'}`} />
-                            </div>
-                            <div>
-                              <p className="font-bold text-gray-700 line-through decoration-rose-300 opacity-80">{item.name}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <span className="font-bold text-gray-500 bg-gray-100 px-2.5 py-1 rounded-md text-sm opacity-80">{item.employeeId}</span>
-                        </td>
-                        <td className="px-4 py-4 min-w-[150px]">
-                          <p className="text-sm font-semibold text-gray-600">{item.designation}</p>
-                          {item.department && <p className="text-xs text-gray-400 mt-0.5">{item.department}</p>}
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div className="flex flex-col gap-1.5">
-                            {item.dateOfJoining && (
-                              <div className="flex items-center text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded w-max border border-emerald-100">
-                                <span className="mr-1 font-bold">Joined:</span> {formatDOB(item.dateOfJoining)}
-                              </div>
-                            )}
-                            <div className="flex items-center text-xs font-medium text-rose-600 bg-rose-50 px-2 py-0.5 rounded w-max border border-rose-100">
-                              <span className="mr-1 font-bold">Left:</span> {item.dateOfLeaving ? formatDOB(item.dateOfLeaving) : 'N/A'}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500 font-medium">
-                          {item.mobileNo || '-'}
-                        </td>
-                        <td className="px-4 py-4">
-                          <p className="text-sm text-gray-600 italic border-l-2 border-rose-200 pl-3 py-1 bg-gray-50 rounded-r-lg max-w-xs truncate" title={item.reasonOfLeaving}>
-                            "{item.reasonOfLeaving || 'No reason provided'}"
-                          </p>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-              {!tableLoading && filteredLeavingData.length === 0 && (
-                <div className="px-6 py-12 text-center">
-                  <p className="text-gray-500 ">
-                    No leaving employees found.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Modal */}
-      {
-        showModal && selectedItem && (
-          <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg shadow-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
-              <div className="flex justify-between items-center p-6 border-b border-gray-300">
-                <h3 className="text-lg font-medium text-gray-700">Leaving Form</h3>
-                <button onClick={() => setShowModal(false)} className="text-gray-700">
-                  <X size={20} />
+      {showModal && selectedItem && typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[99999] p-3 sm:p-4 animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden border border-slate-200 my-auto">
+              {/* Modal Header (Sticky Top) */}
+              <div className="flex justify-between items-center px-5 py-4 border-b border-slate-200 bg-white sticky top-0 z-10 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center font-bold">
+                    <AlertCircle size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-slate-800 tracking-tight">Leaving Form</h3>
+                    <p className="text-[11px] text-slate-400 font-medium">Mark personnel as Left / Archive</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  <X size={18} />
                 </button>
               </div>
-              <form onSubmit={handleSubmit} className="p-6 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Joining ID</label>
-                  <input
-                    type="text"
-                    value={selectedItem.employeeId}
-                    disabled
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-white text-gray-700"
-                  />
+
+              {/* Modal Form Content (Scrollable) */}
+              <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
+                <div className="flex-1 overflow-y-auto p-5 space-y-3.5 custom-scrollbar text-xs">
+                  {/* Employee Summary Card */}
+                  <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">Employee</span>
+                      <span className="font-mono font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-2 py-0.5 rounded text-[10px]">
+                        {selectedItem.employeeId || "-"}
+                      </span>
+                    </div>
+                    <p className="font-extrabold text-slate-800 text-[13px]">
+                      {selectedItem.candidateName}
+                    </p>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      {selectedItem.designation || "N/A"}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Last Working Day <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      name="dateOfLeaving"
+                      value={formData.dateOfLeaving}
+                      onChange={handleChange}
+                      className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 text-xs font-semibold focus:ring-2 focus:ring-rose-200 focus:border-rose-500 outline-none transition-all shadow-2xs"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Reason For Resignation <span className="text-rose-500">*</span>
+                    </label>
+                    <textarea
+                      name="reasonOfLeaving"
+                      value={formData.reasonOfLeaving}
+                      onChange={handleChange}
+                      rows={2}
+                      placeholder="Enter reason for leaving..."
+                      className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 text-xs font-medium focus:ring-2 focus:ring-rose-200 focus:border-rose-500 outline-none transition-all shadow-2xs resize-none"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Salary</label>
+                      <input
+                        type="text"
+                        name="salary"
+                        placeholder="e.g. 30000"
+                        value={formData.salary}
+                        onChange={handleChange}
+                        className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 text-xs font-semibold focus:ring-2 focus:ring-rose-200 focus:border-rose-500 outline-none transition-all shadow-2xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Mobile No.</label>
+                      <input
+                        type="text"
+                        name="mobileNumber"
+                        placeholder="Mobile number"
+                        value={formData.mobileNumber}
+                        onChange={handleChange}
+                        className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 text-xs font-semibold focus:ring-2 focus:ring-rose-200 focus:border-rose-500 outline-none transition-all shadow-2xs"
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Last Working Day *</label>
-                  <input
-                    type="date"
-                    name="dateOfLeaving"
-                    value={formData.dateOfLeaving}
-                    onChange={handleChange}
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-white text-gray-700"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Reason For Resignation *</label>
-                  <textarea
-                    name="reasonOfLeaving"
-                    value={formData.reasonOfLeaving}
-                    onChange={handleChange}
-                    rows={3}
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-white text-gray-700"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Salary</label>
-                  <input
-                    type="text"
-                    name="salary"
-                    value={formData.salary}
-                    onChange={handleChange}
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-white text-gray-700"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Candidate Name</label>
-                  <input
-                    type="text"
-                    value={selectedItem.candidateName}
-                    disabled
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-gray-100 text-gray-700 cursor-not-allowed"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Designation</label>
-                  <input
-                    type="text"
-                    value={selectedItem.designation}
-                    disabled
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-gray-100 text-gray-700 cursor-not-allowed"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Mobile No.</label>
-                  <input
-                    type="text"
-                    name="mobileNumber"
-                    value={formData.mobileNumber}
-                    onChange={handleChange}
-                    className="w-full border border-gray-500 rounded-md px-3 py-2 bg-white text-gray-700"
-                  />
-                </div>
-
-                <div className="flex justify-end space-x-2 pt-4">
+                {/* Sticky Footer with Always-Visible Submit Button */}
+                <div className="sticky bottom-0 bg-slate-50 border-t border-slate-200 px-5 py-3.5 flex items-center justify-end gap-2.5 shrink-0 z-10 shadow-xs">
                   <button
                     type="button"
                     onClick={() => setShowModal(false)}
-                    className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-white"
+                    className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-white active:scale-95 transition-all cursor-pointer shadow-2xs"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className={`px-4 py-2 text-white bg-indigo-700 rounded-md hover:bg-indigo-800 min-h-[42px] flex items-center justify-center ${submitting ? 'opacity-90 cursor-not-allowed' : ''}`}
                     disabled={submitting}
+                    className="px-5 py-2 text-white bg-rose-600 hover:bg-rose-700 active:scale-95 rounded-xl text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
                     {submitting ? (
-                      <div className="flex items-center">
-                        <svg
-                          className="animate-spin h-4 w-4 text-white mr-2"
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                         <span>Submitting...</span>
-                      </div>
-                    ) : 'Submit'}
+                      </>
+                    ) : (
+                      <span>Submit Leaving</span>
+                    )}
                   </button>
                 </div>
               </form>
             </div>
-          </div>
-        )
-      }
+          </div>,
+          document.body
+      )}
 
-      {/* Profile Details Modal */}
-      {showProfileModal && selectedProfile && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col relative">
-            <div className="absolute top-4 right-4 z-10">
-              <button onClick={closeProfileModal} className="p-2 bg-white/50 backdrop-blur-md rounded-full text-gray-600 hover:text-gray-900 hover:bg-white shadow-sm transition-all">
-                <X size={24} />
-              </button>
+      {/* Enhanced Profile Details Modal */}
+      {showProfileModal && selectedProfile && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-md flex items-center justify-center z-[99999] p-3 sm:p-6 animate-fadeIn">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col relative animate-scaleIn border border-slate-200/90">
+            
+            {/* Header / Cover Banner */}
+            <div className="relative bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 px-6 sm:px-8 py-4.5 text-white shrink-0 border-b border-indigo-900/40">
+              <div className="relative z-10 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-[11px] font-bold tracking-widest uppercase text-indigo-200">
+                    PIRAMAL PHARMA • EMPLOYEE DOSSIER
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prof = selectedProfile;
+                      setShowProfileModal(false);
+                      handleEditClick(prof);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95 text-xs font-semibold text-white border border-white/15 backdrop-blur-md transition-all cursor-pointer"
+                  >
+                    <Edit size={13} />
+                    <span>Edit Profile</span>
+                  </button>
+
+                  <button 
+                    onClick={closeProfileModal} 
+                    className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white border border-white/15 backdrop-blur-md transition-all cursor-pointer"
+                    aria-label="Close modal"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto w-full">
-              <div className="bg-gradient-to-r from-indigo-600 to-purple-600 h-24 w-full flex-shrink-0"></div>
+            {/* Scrollable Modal Body */}
+            <div className="flex-1 overflow-y-auto w-full custom-scrollbar p-6 sm:p-8 space-y-5 sm:space-y-6">
               
-              <div className="px-6 pb-6">
-                <div className="relative flex justify-between items-end -mt-12 mb-4">
-                <div className="w-24 h-24 rounded-full bg-white p-1 shadow-md border border-gray-100 flex-shrink-0">
-                  <div className="w-full h-full bg-white rounded-full overflow-hidden flex items-center justify-center">
-                    {selectedProfile.candidatePhoto ? (
-                      <button
-                        type="button"
-                        onClick={() => openImagePreview(selectedProfile.candidatePhoto, selectedProfile.candidateName || selectedProfile.name)}
-                        className="w-full h-full cursor-zoom-in"
-                        aria-label="Open employee photo"
-                      >
-                        <img src={getDriveImageUrl(selectedProfile.candidatePhoto, 400)} alt={selectedProfile.candidateName || selectedProfile.name} className="w-full h-full object-contain" onError={(e) => { e.target.onerror = null; e.target.parentElement.style.display = 'none'; e.target.parentElement.nextSibling.style.display = 'block'; }} />
-                      </button>
-                    ) : null}
-                    <User size={40} className={`text-indigo-300 ${selectedProfile.candidatePhoto ? 'hidden' : 'block'}`} />
+              {/* Profile Avatar & Hero Information Card */}
+              <div className="bg-gradient-to-br from-slate-50 via-slate-50 to-indigo-50/40 p-5 sm:p-6 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-5">
+                <div className="flex items-center gap-5 sm:gap-6 pl-1 sm:pl-2">
+                  {/* Avatar Container */}
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-white p-1.5 shadow-md border border-slate-200/90 shrink-0 relative group">
+                    <div className="w-full h-full bg-slate-100 rounded-xl overflow-hidden flex items-center justify-center relative">
+                      {selectedProfile.candidatePhoto ? (
+                        <button
+                          type="button"
+                          onClick={() => openImagePreview(selectedProfile.candidatePhoto, selectedProfile.candidateName || selectedProfile.name)}
+                          className="w-full h-full cursor-zoom-in group/btn relative block"
+                          aria-label="Open employee photo"
+                        >
+                          <img 
+                            src={getDriveImageUrl(selectedProfile.candidatePhoto, 600)} 
+                            alt={selectedProfile.candidateName || selectedProfile.name} 
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover object-top group-hover/btn:scale-105 transition-transform duration-300" 
+                            onError={(e) => { 
+                              e.target.onerror = null; 
+                              e.target.style.display = 'none'; 
+                              if (e.target.nextSibling) e.target.nextSibling.style.display = 'flex';
+                            }} 
+                          />
+                          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/btn:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold">
+                            <Eye size={16} />
+                          </div>
+                        </button>
+                      ) : null}
+                      <div className={`w-full h-full bg-gradient-to-tr ${getAvatarGradient(selectedProfile.candidateName || selectedProfile.name)} text-white font-black text-2xl flex items-center justify-center ${selectedProfile.candidatePhoto ? 'hidden' : 'flex'}`}>
+                        {getInitials(selectedProfile.candidateName || selectedProfile.name)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Name and Designation */}
+                  <div className="space-y-2 pl-1 sm:pl-2">
+                    <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                      {selectedProfile.candidateName || selectedProfile.name}
+                    </h2>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="inline-flex items-center gap-1 font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2.5 py-1 rounded-lg">
+                        <Briefcase size={13} className="text-indigo-600" /> 
+                        {selectedProfile.designation || 'No Designation'}
+                      </span>
+                      <span className="inline-flex items-center gap-1 font-mono font-bold text-slate-700 bg-white border border-slate-200 px-2.5 py-1 rounded-lg shadow-2xs">
+                        {selectedProfile.employeeId || selectedProfile.employee_code || 'No Code'}
+                      </span>
+                      {selectedProfile.joiningPlace && (
+                        <span className="inline-flex items-center gap-1 font-medium text-sky-700 bg-sky-50 border border-sky-200/70 px-2.5 py-1 rounded-lg">
+                          <MapPin size={12} className="text-sky-500" />
+                          {selectedProfile.joiningPlace}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="mb-1 flex-shrink-0">
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold shadow-sm ${selectedProfile.isArchived ? 'bg-rose-100 text-rose-700 border border-rose-200' : 'bg-emerald-100 text-emerald-700 border border-emerald-200'}`}>
-                    {selectedProfile.isArchived ? 'Inactive' : 'Active Employee'}
+
+                {/* Status Badge */}
+                <div className="shrink-0 self-start sm:self-center pr-1 sm:pr-2">
+                  <span className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-xs ${
+                    selectedProfile.isArchived 
+                      ? 'bg-rose-50 text-rose-700 border border-rose-200' 
+                      : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${selectedProfile.isArchived ? 'bg-rose-500' : 'bg-emerald-500 animate-pulse'}`} />
+                    {selectedProfile.isArchived ? 'Inactive / Left' : 'Active Employee'}
                   </span>
                 </div>
               </div>
 
-              <div>
-                <h2 className="text-2xl font-black text-gray-800 tracking-tight">{selectedProfile.candidateName || selectedProfile.name}</h2>
-                <div className="flex items-center gap-2 mt-1.5 text-gray-600 font-medium text-sm">
-                  <span className="flex items-center gap-1"><Briefcase size={14} className="text-indigo-400" /> {selectedProfile.designation || 'No Designation'}</span>
-                  <span className="w-1 h-1 rounded-full bg-gray-300"></span>
-                  <span className="text-indigo-600 font-bold bg-indigo-50 px-2 py-0.5 rounded-md text-xs">{selectedProfile.employeeId}</span>
-                </div>
-              </div>
-
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-4">
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Contact Info</h3>
-                    <div className="space-y-4">
-                      <div className="flex items-start gap-3">
-                        <div className="p-2 bg-white rounded-lg shadow-sm text-blue-500"><Phone size={18} /></div>
-                        <div>
-                          <p className="text-xs text-gray-500 font-medium mb-0.5">Mobile Number</p>
-                          <p className="text-sm font-bold text-gray-800">{selectedProfile.mobileNo || 'N/A'}</p>
-                        </div>
+              {/* 4 Core Details Panels */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4.5 text-xs">
+                {/* 1. Personal & KYC Details */}
+                <div className="bg-slate-50/90 hover:bg-slate-50 transition-colors p-5 sm:p-6 rounded-2xl border border-slate-200/90 space-y-4 shadow-xs">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 pl-1">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-indigo-100 text-indigo-700">
+                        <User size={13} />
                       </div>
-                      {!selectedProfile.isArchived && (
-                        <div className="flex items-start gap-3">
-                          <div className="p-2 bg-white rounded-lg shadow-sm text-purple-500"><Mail size={18} /></div>
-                          <div>
-                            <p className="text-xs text-gray-500 font-medium mb-0.5">Email Address</p>
-                            <p className="text-sm font-bold text-gray-800 truncate pr-2">{selectedProfile.emailId || 'N/A'}</p>
-                          </div>
-                        </div>
-                      )}
-                      {selectedProfile.fatherName && selectedProfile.fatherName !== "N/A" && selectedProfile.fatherName !== "na" && (
-                        <div className="flex items-start gap-3">
-                          <div className="p-2 bg-white rounded-lg shadow-sm text-emerald-500"><User size={18} /></div>
-                          <div>
-                            <p className="text-xs text-gray-500 font-medium mb-0.5">Father's Name</p>
-                            <p className="text-sm font-bold text-gray-800">{selectedProfile.fatherName}</p>
-                          </div>
-                        </div>
+                      Personal & KYC Details
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3.5 pl-1 pr-1">
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Father's Name</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.fatherName || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Date of Birth</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.dobAsPerAadhar || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Gender</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.gender || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Highest Qualification</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.highestQualification || '—'}</span>
+                    </div>
+                    <div className="col-span-2 pt-1.5 border-t border-slate-200/60 flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block">Aadhar Card Number</span>
+                        <span className="font-mono font-bold text-slate-900 tracking-wider">{selectedProfile.aadharCardNo || '—'}</span>
+                      </div>
+                      {selectedProfile.aadharCardNo && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(selectedProfile.aadharCardNo);
+                            toast.success("Aadhar number copied!");
+                          }}
+                          className="p-1 text-slate-400 hover:text-indigo-600 transition-colors"
+                          title="Copy Aadhar Number"
+                        >
+                          <Copy size={13} />
+                        </button>
                       )}
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">Employment Details</h3>
-                    <div className="space-y-4">
-                      <div className="flex items-start gap-3">
-                        <div className="p-2 bg-white rounded-lg shadow-sm text-orange-500"><Calendar size={18} /></div>
-                        <div>
-                          <p className="text-xs text-gray-500 font-medium mb-0.5">Date of Joining</p>
-                          <p className="text-sm font-bold text-gray-800">{selectedProfile.dateOfJoining ? formatDOB(selectedProfile.dateOfJoining) : 'N/A'}</p>
-                        </div>
+                {/* 2. Contact & Address */}
+                <div className="bg-slate-50/90 hover:bg-slate-50 transition-colors p-5 sm:p-6 rounded-2xl border border-slate-200/90 space-y-4 shadow-xs">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 pl-1">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-emerald-100 text-emerald-700">
+                        <Phone size={13} />
                       </div>
-                      <div className="flex items-start gap-3">
-                        <div className="p-2 bg-white rounded-lg shadow-sm text-rose-500"><MapPin size={18} /></div>
-                        <div>
-                          <p className="text-xs text-gray-500 font-medium mb-0.5">Location & Dept</p>
-                          <p className="text-sm font-bold text-gray-800">
-                            {selectedProfile.joiningPlace || 'N/A'} 
-                            {selectedProfile.department && selectedProfile.department !== "N/A" && selectedProfile.department !== "na" && (
-                              <><span className="text-gray-400 font-normal mx-1">|</span> {selectedProfile.department}</>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      
-                      {selectedProfile.isArchived && (
-                        <div className="flex items-start gap-3 mt-4 pt-4 border-t border-gray-200">
-                          <div className="p-2 bg-rose-100 rounded-lg shadow-sm text-rose-600"><Clock size={18} /></div>
-                          <div>
-                            <p className="text-xs text-rose-500 font-bold mb-0.5">Date of Leaving</p>
-                            <p className="text-sm font-bold text-gray-800">{selectedProfile.dateOfLeaving ? formatDOB(selectedProfile.dateOfLeaving) : 'N/A'}</p>
-                            {selectedProfile.reasonOfLeaving && (
-                              <p className="text-xs text-gray-600 mt-1 italic">"{selectedProfile.reasonOfLeaving}"</p>
-                            )}
-                          </div>
-                        </div>
+                      Contact & Address
+                    </h3>
+                  </div>
+
+                  <div className="space-y-3 pl-1 pr-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">Primary Mobile</span>
+                      {selectedProfile.mobileNo ? (
+                        <a href={`tel:${selectedProfile.mobileNo}`} className="font-mono font-bold text-emerald-700 hover:underline flex items-center gap-1">
+                          <Phone size={11} />
+                          {selectedProfile.mobileNo}
+                        </a>
+                      ) : (
+                        <span className="font-bold text-slate-700">—</span>
                       )}
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">Family Mobile</span>
+                      <span className="font-mono font-bold text-slate-700">{selectedProfile.familyMobileNo || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">Personal Email</span>
+                      {selectedProfile.emailId || selectedProfile.personalEmail ? (
+                        <a href={`mailto:${selectedProfile.emailId || selectedProfile.personalEmail}`} className="font-medium text-indigo-600 hover:underline truncate max-w-[200px]">
+                          {selectedProfile.emailId || selectedProfile.personalEmail}
+                        </a>
+                      ) : (
+                        <span className="font-medium text-slate-700">—</span>
+                      )}
+                    </div>
+                    <div className="pt-1.5 border-t border-slate-200/60">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Current Address</span>
+                      <p className="font-medium text-slate-700 text-[11px] leading-relaxed">{selectedProfile.currentAddress || '—'}</p>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Address as per Aadhar</span>
+                      <p className="font-medium text-slate-700 text-[11px] leading-relaxed">{selectedProfile.addressAsPerAadhar || '—'}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Employment & Salary */}
+                <div className="bg-slate-50/90 hover:bg-slate-50 transition-colors p-5 sm:p-6 rounded-2xl border border-slate-200/90 space-y-4 shadow-xs">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 pl-1">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-blue-100 text-blue-700">
+                        <Briefcase size={13} />
+                      </div>
+                      Employment & Role
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3.5 pl-1 pr-1">
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Date of Joining</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.dateOfJoining ? formatDOB(selectedProfile.dateOfJoining) : '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Joining Location</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.joiningPlace || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Department</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.department || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Indent Reference</span>
+                      <span className="font-bold text-slate-800">{selectedProfile.indentNo || '—'}</span>
+                    </div>
+                    <div className="col-span-2 pt-2 border-t border-slate-200/60 flex items-center justify-between bg-emerald-50/60 p-3 rounded-xl border border-emerald-200/60">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-emerald-800 block">Monthly Salary / CTC</span>
+                        <span className="text-base font-black text-emerald-700 tracking-tight">₹ {selectedProfile.salary || '—'}</span>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-extrabold uppercase">
+                        Finalized
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Bank Account & Statutory */}
+                <div className="bg-slate-50/90 hover:bg-slate-50 transition-colors p-5 sm:p-6 rounded-2xl border border-slate-200/90 space-y-4 shadow-xs">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 pl-1">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-amber-100 text-amber-700">
+                        <CreditCard size={13} />
+                      </div>
+                      Bank Account & Statutory
+                    </h3>
+                  </div>
+
+                  <div className="space-y-3 pl-1 pr-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">Bank Account No</span>
+                      <span className="font-mono font-bold text-slate-900">{selectedProfile.currentBankAcNo || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">IFSC Code</span>
+                      <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded border border-indigo-100">{selectedProfile.ifscCode || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">Branch Name</span>
+                      <span className="font-semibold text-slate-700">{selectedProfile.branchName || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-200/60">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">PF ID No</span>
+                      <span className="font-mono font-medium text-slate-800">{selectedProfile.pastPfId || '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-semibold text-slate-400">ESIC No</span>
+                      <span className="font-mono font-medium text-slate-800">{selectedProfile.esicNo || '—'}</span>
                     </div>
                   </div>
                 </div>
               </div>
-              
-              {selectedProfile.aadharPhoto && (
-                <div className="mt-4">
-                  <a 
-                    href={selectedProfile.aadharPhoto} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center w-full gap-2 py-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-xl transition-colors border border-indigo-100"
-                  >
-                    <FileText size={18} />
-                    View Aadhar Document
-                  </a>
+
+              {/* 5. Assigned Corporate Assets (if any) */}
+              {(selectedProfile.laptopBrandModel || selectedProfile.mobileBrandSim || selectedProfile.gmailId) && (
+                <div className="mt-4 bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 shadow-sm">
+                  <h3 className="text-xs font-bold text-cyan-300 uppercase tracking-wider mb-2.5 flex items-center gap-2">
+                    <Laptop size={14} className="text-cyan-400" />
+                    Assigned Corporate Assets & IT Credentials
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    {selectedProfile.laptopBrandModel && (
+                      <div className="bg-white/5 border border-white/10 p-2.5 rounded-xl">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Laptop / Workstation</span>
+                        <span className="font-bold text-slate-200">{selectedProfile.laptopBrandModel}</span>
+                      </div>
+                    )}
+                    {selectedProfile.mobileBrandSim && (
+                      <div className="bg-white/5 border border-white/10 p-2.5 rounded-xl">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Mobile / SIM Allocation</span>
+                        <span className="font-bold text-slate-200">{selectedProfile.mobileBrandSim}</span>
+                      </div>
+                    )}
+                    {selectedProfile.gmailId && (
+                      <div className="bg-white/5 border border-white/10 p-2.5 rounded-xl">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Official Google Workspace</span>
+                        <span className="font-bold text-cyan-300">{selectedProfile.gmailId}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
+
+              {/* 6. Uploaded KYC Documents Gallery */}
+              <div className="mt-5 pt-4 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-purple-100 text-purple-700">
+                      <FileText size={13} />
+                    </div>
+                    Uploaded Documents & KYC Proofs
+                  </h3>
+                  <span className="text-[11px] text-slate-400 font-medium">Click to view document proofs</span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                  {/* Aadhar Photo */}
+                  {selectedProfile.aadharPhoto ? (
+                    <div className="p-3 bg-indigo-50/80 border border-indigo-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-indigo-600 shadow-2xs">
+                        <FileText size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-indigo-900 leading-tight">Aadhar Card</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-indigo-100/80">
+                        <a 
+                          href={selectedProfile.aadharPhoto} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-indigo-100 text-indigo-700 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-indigo-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.aadharPhoto, `${selectedProfile.candidateName || 'Employee'}_Aadhar`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download Aadhar"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <FileText size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No Aadhar</span>
+                    </div>
+                  )}
+
+                  {/* PAN Card */}
+                  {selectedProfile.panCard ? (
+                    <div className="p-3 bg-purple-50/80 border border-purple-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-purple-600 shadow-2xs">
+                        <FileText size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-purple-900 leading-tight">PAN Card</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-purple-100/80">
+                        <a 
+                          href={selectedProfile.panCard} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-purple-100 text-purple-700 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-purple-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.panCard, `${selectedProfile.candidateName || 'Employee'}_PAN`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download PAN"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <FileText size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No PAN</span>
+                    </div>
+                  )}
+
+                  {/* Bank Passbook */}
+                  {selectedProfile.bankPassbookPhoto ? (
+                    <div className="p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-emerald-600 shadow-2xs">
+                        <CreditCard size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-emerald-900 leading-tight">Bank Passbook</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-emerald-100/80">
+                        <a 
+                          href={selectedProfile.bankPassbookPhoto} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-emerald-100 text-emerald-700 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-emerald-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.bankPassbookPhoto, `${selectedProfile.candidateName || 'Employee'}_Passbook`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download Passbook"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <CreditCard size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No Passbook</span>
+                    </div>
+                  )}
+
+                  {/* Qualification */}
+                  {selectedProfile.qualificationPhoto ? (
+                    <div className="p-3 bg-sky-50/80 border border-sky-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-sky-600 shadow-2xs">
+                        <Award size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-sky-900 leading-tight">Qualification</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-sky-100/80">
+                        <a 
+                          href={selectedProfile.qualificationPhoto} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-sky-100 text-sky-700 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-sky-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.qualificationPhoto, `${selectedProfile.candidateName || 'Employee'}_Qualification`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download Qualification"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <Award size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No Degree</span>
+                    </div>
+                  )}
+
+                  {/* Salary Slip */}
+                  {selectedProfile.salarySlip ? (
+                    <div className="p-3 bg-amber-50/80 border border-amber-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-amber-600 shadow-2xs">
+                        <FileText size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-amber-900 leading-tight">Salary Slip</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-amber-100/80">
+                        <a 
+                          href={selectedProfile.salarySlip} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-amber-100 text-amber-800 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-amber-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.salarySlip, `${selectedProfile.candidateName || 'Employee'}_SalarySlip`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download Salary Slip"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <FileText size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No Slip</span>
+                    </div>
+                  )}
+
+                  {/* Resume / CV */}
+                  {selectedProfile.resumeUpload ? (
+                    <div className="p-3 bg-teal-50/80 border border-teal-200/80 rounded-2xl flex flex-col items-center text-center gap-1.5 transition-all hover:shadow-sm">
+                      <div className="p-2 rounded-xl bg-white text-teal-600 shadow-2xs">
+                        <FileText size={16} />
+                      </div>
+                      <span className="text-[11px] font-bold text-teal-900 leading-tight">Resume / CV</span>
+                      <div className="flex items-center gap-1 w-full pt-1 border-t border-teal-100/80">
+                        <a 
+                          href={selectedProfile.resumeUpload} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          className="flex-1 py-1 px-1 rounded-lg bg-white hover:bg-teal-100 text-teal-800 font-bold text-[10px] flex items-center justify-center gap-0.5 border border-teal-200/60 transition-colors shadow-2xs"
+                          title="View Online"
+                        >
+                          <span>View</span>
+                          <ExternalLink size={9} />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadFile(e, selectedProfile.resumeUpload, `${selectedProfile.candidateName || 'Employee'}_Resume`)}
+                          className="flex-1 py-1 px-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-[10px] flex items-center justify-center gap-0.5 transition-colors shadow-2xs cursor-pointer active:scale-95"
+                          title="Download Resume"
+                        >
+                          <Download size={10} />
+                          <span>Save</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center text-center gap-1.5 opacity-50 min-h-[105px]">
+                      <FileText size={16} className="text-slate-400" />
+                      <span className="text-[10px] font-medium text-slate-400">No Resume</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
+
+            {/* Modal Bottom Bar */}
+            <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
+              <span className="font-medium text-slate-400">Employee Profile Dossier • Verified Database</span>
+              <button
+                type="button"
+                onClick={closeProfileModal}
+                className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold transition-all cursor-pointer shadow-sm active:scale-95"
+              >
+                Close Dossier
+              </button>
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showEditModal && editingItem && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+      {showEditModal && editingItem && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[99999] p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col relative">
             <div className="flex justify-between items-center px-6 py-5 border-b border-gray-150">
               <div>
@@ -1767,32 +2851,64 @@ const Employee = () => {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {imagePreview && (
+      {/* Full-Size DP / Image Lightbox Preview */}
+      {imagePreview && typeof document !== "undefined" && createPortal(
         <div
-          className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[99999] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4 animate-fadeIn"
           onClick={() => setImagePreview(null)}
         >
-          <button
-            type="button"
-            onClick={() => setImagePreview(null)}
-            className="absolute top-4 right-4 p-2 bg-white/90 rounded-full text-gray-700 hover:text-gray-950 hover:bg-white shadow-lg transition-all"
-            aria-label="Close image preview"
-          >
-            <X size={26} />
-          </button>
-          <img
-            src={imagePreview.src}
-            alt={imagePreview.alt}
-            className="max-w-full max-h-[92vh] rounded-2xl object-contain shadow-2xl bg-white"
+          {/* Top Actions */}
+          <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
+            {(imagePreview.url || imagePreview.src) && (
+              <a
+                href={imagePreview.url || imagePreview.src}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="px-3.5 py-2 bg-white/10 hover:bg-white/20 active:scale-95 text-white rounded-xl text-xs font-bold backdrop-blur-md border border-white/20 flex items-center gap-1.5 transition-all cursor-pointer shadow-lg"
+              >
+                <ExternalLink size={14} />
+                <span>Open Original</span>
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setImagePreview(null)}
+              className="p-2.5 bg-white/10 hover:bg-white/20 active:scale-95 text-white rounded-full backdrop-blur-md border border-white/20 shadow-lg transition-all cursor-pointer"
+              aria-label="Close image preview"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Image Container */}
+          <div 
+            className="max-w-4xl max-h-[85vh] p-2 bg-white/5 border border-white/10 rounded-3xl shadow-2xl backdrop-blur-sm flex flex-col items-center justify-center overflow-hidden animate-scaleIn"
             onClick={(e) => e.stopPropagation()}
-          />
-        </div>
+          >
+            <img
+              src={getDriveImageUrl(imagePreview.url || imagePreview.src, 1200)}
+              alt={imagePreview.title || imagePreview.alt || "Employee DP Full View"}
+              referrerPolicy="no-referrer"
+              className="max-w-full max-h-[78vh] rounded-2xl object-contain shadow-2xl bg-slate-900/40"
+            />
+            {(imagePreview.title || imagePreview.alt) && (
+              <div className="mt-3 px-4 py-1.5 rounded-full bg-black/40 backdrop-blur-md border border-white/10">
+                <p className="text-xs font-bold text-white tracking-wide">
+                  {imagePreview.title || imagePreview.alt}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body
       )}
-      {showPasswordModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      {showPasswordModal && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xl font-semibold text-gray-800">Authentication Required</h3>
@@ -1824,7 +2940,8 @@ const Employee = () => {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

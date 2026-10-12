@@ -33,6 +33,7 @@ import {
   CheckCircle,
   UserCog,
   Home,
+  Settings,
 } from "lucide-react";
 
 import useAuthStore from "../store/authStore";
@@ -59,13 +60,15 @@ const SidebarContent = ({
 
   const badgeMap = {
     "/online_posting": (pendingCounts?.onlinePostingCount || 0) + (pendingCounts?.jobConsultancyCount || 0),
-    "/verification_before_interview": pendingCounts?.verificationCount,
-    "/interview_final_selection": pendingCounts?.interviewSelectionCount,
-    "/joining": pendingCounts?.joiningManagementCount,
-    "/check-salary-slip-and-resume": pendingCounts?.checkSalarySlipCount,
-    "/joining-letter-release": pendingCounts?.joiningLetterCount,
-    "/induction-or-training": pendingCounts?.inductionTrainingCount,
-    "/asset-assignment": pendingCounts?.assetAssignmentCount
+    "/candidate_sortlisted": pendingCounts?.candidateShortlistedCount || 0,
+    "/candidate-shortlisted": pendingCounts?.candidateShortlistedCount || 0,
+    "/verification_before_interview": pendingCounts?.verificationCount || 0,
+    "/interview_final_selection": pendingCounts?.interviewSelectionCount || 0,
+    "/joining": pendingCounts?.joiningManagementCount || 0,
+    "/check-salary-slip-and-resume": pendingCounts?.checkSalarySlipCount || 0,
+    "/joining-letter-release": pendingCounts?.joiningLetterCount || 0,
+    "/induction-or-training": pendingCounts?.inductionTrainingCount || 0,
+    "/asset-assignment": pendingCounts?.assetAssignmentCount || 0,
   };
 
   return (
@@ -647,6 +650,7 @@ const Sidebar = ({ onClose, isCollapsed = false }) => {
     UserX,
     Video,
     Home,
+    Settings,
   };
 
   const bindMenuIcons = (items) =>

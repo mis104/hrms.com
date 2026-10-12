@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Search, Download } from 'lucide-react';
+import { supabase } from '../services/supabaseClient';
 
 const Attendancedaily = () => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -16,64 +17,79 @@ const Attendancedaily = () => {
     setError(null);
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_GOOGLE_SHEET_URL}?sheet=Report Daily&action=fetch`
-      );
+      const [attRes, usersRes] = await Promise.all([
+        supabase
+          .from('attendance')
+          .select('person_name, date, time, status, month_name, year_name, timestampe')
+          .order('id', { ascending: false })
+          .limit(3000),
+        supabase
+          .from('users')
+          .select('name, username, employee_type, category')
+      ]);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (attRes.error) throw attRes.error;
 
-      const result = await response.json();
-      console.log('Raw Report Daily API response:', result);
+      const userMap = {};
+      (usersRes.data || []).forEach(u => {
+        if (u.name) userMap[u.name.toLowerCase().trim()] = u;
+      });
 
-      if (!result.success) {
-        if (result.error && result.error.includes("Cannot read properties of null")) {
-          console.warn("Report Daily sheet not found. Defaulting to empty.");
-          setAttendanceData([]);
-          return;
+      // Group by person + date to match IN and OUT
+      const grouped = {};
+      (attRes.data || []).forEach(row => {
+        const name = (row.person_name || '').trim();
+        const dateStr = (row.date || '').trim();
+        if (!name || !dateStr) return;
+
+        const key = `${name}_${dateStr}`;
+        if (!grouped[key]) {
+          const uInfo = userMap[name.toLowerCase()] || {};
+          grouped[key] = {
+            year: row.year_name || '',
+            monthName: row.month_name || '',
+            date: dateStr,
+            day: '',
+            companyName: 'Piramal',
+            empIdCode: uInfo.username || '',
+            name: name,
+            designation: uInfo.employee_type || uInfo.category || 'Staff',
+            holiday: '',
+            workingDay: '1',
+            nHoliday: '',
+            status: 'Present',
+            inTime: '',
+            outTime: '',
+            workingHours: '',
+            lateMinutes: '',
+            earlyOut: '',
+            overtimeHours: '',
+            punchMiss: '',
+            remarks: '',
+          };
         }
-        throw new Error(result.error || 'Failed to fetch data from Report Daily sheet');
-      }
 
-      const rawData = result.data || result;
+        const statusUpper = (row.status || '').toUpperCase();
+        if (statusUpper === 'IN' && !grouped[key].inTime) {
+          grouped[key].inTime = row.time || '';
+        } else if (statusUpper === 'OUT') {
+          grouped[key].outTime = row.time || '';
+        }
 
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
+        if (grouped[key].inTime && grouped[key].outTime) {
+          grouped[key].status = 'Present';
+          grouped[key].punchMiss = 'No';
+        } else {
+          grouped[key].status = 'Half Day';
+          grouped[key].punchMiss = 'Yes';
+        }
+      });
 
-      // Process data - assuming first row contains headers
-      const headers = rawData[0]; // First row as headers
-      const dataRows = rawData.length > 1 ? rawData.slice(1) : [];
-
-      const processedData = dataRows.map((row) => ({
-        year: row[0] || '', // Column A (index-0)
-        monthName: row[1] || '', // Column B (index-1)
-        date: row[2] || '', // Column C (index-2)
-        day: row[3] || '', // Column D (index-3)
-        companyName: row[4] || '', // Column E (index-4)
-        empIdCode: row[5] || '', // Column F (index-5)
-        name: row[6] || '', // Column G (index-6)
-        designation: row[7] || '', // Column H (index-7)
-        holiday: row[8] || '', // Column I (index-8)
-        workingDay: row[9] || '', // Column J (index-9)
-        nHoliday: row[10] || '', // Column K (index-10)
-        status: row[11] || '', // Column L (index-11)
-        inTime: row[12] || '', // Column M (index-12)
-        outTime: row[13] || '', // Column N (index-13)
-        workingHours: row[14] || '', // Column O (index-14)
-        lateMinutes: row[15] || '', // Column P (index-15)
-        earlyOut: row[16] || '', // Column Q (index-16)
-        overtimeHours: row[17] || '', // Column R (index-17)
-        punchMiss: row[18] || '', // Column S (index-18)
-        remarks: row[19] || '', // Column T (index-19)
-      }));
-
-      console.log('Processed attendance data:', processedData);
+      const processedData = Object.values(grouped);
       setAttendanceData(processedData);
 
     } catch (error) {
-      console.error('Error fetching Report Daily data:', error);
+      console.error('Error fetching Report Daily data from Supabase:', error);
       setError(error.message);
     } finally {
       setLoading(false);

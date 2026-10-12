@@ -7,11 +7,8 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import useAuthStore from "../store/authStore";
+import { supabase } from "../services/supabaseClient";
 
-const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
-const OUTSTATION_SPREADSHEET_ID = "1WTT8ZQhtf1yeSChNn2uJeW5Tz2TvYjQLrxhTx5l4Fgw";
-const ATTENDANCE_SHEET_NAME = "Attendance";
-const MASTER_SHEET_NAME = "Master";
 const DEFAULT_ALLOWED_RADIUS_METERS = 100;
 const MARK_ATTENDANCE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days cache for attendance log
 const MARK_ATTENDANCE_MASTER_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days cache for master settings
@@ -153,33 +150,6 @@ const formatTimeValue = (value) => {
 const dateKey = (date) => {
   if (!date) return "";
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-};
-
-const parseGoogleSheetTable = (text, sheetLabel = "sheet") => {
-  const jsonStart = text.indexOf("{");
-  const jsonEnd = text.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
-    throw new Error(`Invalid ${sheetLabel} response`);
-  }
-
-  const payload = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-  if (payload.status && payload.status !== "ok") {
-    throw new Error(payload.errors?.[0]?.detailed_message || `Failed to read ${sheetLabel}`);
-  }
-
-  return (payload.table?.rows || []).map((row) =>
-    (row.c || []).map((cell) => {
-      if (!cell) return "";
-      return cell.f ?? cell.v ?? "";
-    })
-  );
-};
-
-const fetchSheetRows = async (sheetName) => {
-  const url = `https://docs.google.com/spreadsheets/d/${OUTSTATION_SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&cb=${Date.now()}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${sheetName} sheet HTTP error! status: ${response.status}`);
-  return parseGoogleSheetTable(await response.text(), sheetName);
 };
 
 const getStoredUser = () => {
@@ -515,39 +485,58 @@ const MarkAttendance = () => {
     setError(null);
 
     try {
-      if (!OUTSTATION_SCRIPT_URL) throw new Error("VITE_OUTSTATION_SHEET_URL missing hai");
+      let rawAttendance = [];
 
-      const attendanceController = new AbortController();
-      const attendanceTimeout = window.setTimeout(() => attendanceController.abort(), 8000);
-      const attendancePromise = fetch(`${OUTSTATION_SCRIPT_URL}?action=getAllData`, { signal: attendanceController.signal })
-        .then(async (response) => {
-          if (!response.ok) throw new Error(`Attendance HTTP error! status: ${response.status}`);
-          const result = await response.json();
-          if (result.status !== "success") throw new Error(result.message || "Attendance data fetch failed");
-          return result.attendance || [];
-        })
-        .finally(() => window.clearTimeout(attendanceTimeout));
+      let attQuery = supabase
+        .from("attendance")
+        .select("person_name, date_and_time, timestampe, status, map_link, address")
+        .order("id", { ascending: false });
 
-      const masterPromise = fetchSheetRows(MASTER_SHEET_NAME)
-        .then(normalizeMasterRows)
-        .catch((masterError) => {
-          console.warn("Master sheet location rules skipped:", masterError);
-          return [];
+      if (punchPersonName) {
+        attQuery = attQuery.ilike("person_name", `%${punchPersonName}%`);
+      } else {
+        attQuery = attQuery.limit(500);
+      }
+
+      const [supaAttRes, supaUsersRes] = await Promise.all([
+        attQuery,
+        supabase
+          .from("users")
+          .select("name, username, latitude, longitude, range, time_in, time_out, employee_type, category"),
+      ]);
+
+      if (!supaUsersRes.error && supaUsersRes.data && supaUsersRes.data.length > 0) {
+        const masterRows = supaUsersRes.data.map((u) => ({
+          personName: u.name || "",
+          username: u.username || "",
+          role: "",
+          access: "",
+          employeeType: u.employee_type || u.category || "",
+          latitude: parseNumberOrNull(u.latitude),
+          longitude: parseNumberOrNull(u.longitude),
+          rangeMeters: parseNumberOrNull(u.range) || DEFAULT_ALLOWED_RADIUS_METERS,
+        }));
+        writeCache(MARK_ATTENDANCE_MASTER_CACHE_KEY, masterRows);
+        setMasterUsers(masterRows);
+        setInitialFetchDone(true);
+      }
+
+      if (!supaAttRes.error && supaAttRes.data && supaAttRes.data.length > 0) {
+        rawAttendance = supaAttRes.data.map((r) => {
+          const statusStr = (r.status || "").toString().trim().toUpperCase();
+          const dt = r.date_and_time || r.timestampe || "";
+          return {
+            personName: r.person_name || "",
+            dateTime: dt,
+            inDate: statusStr === "IN" ? dt : "",
+            outDate: statusStr === "OUT" ? dt : "",
+            status: statusStr,
+            mapLink: r.map_link || "",
+            address: r.address || "",
+          };
         });
+      }
 
-      // Location settings (Master) load independently so Check IN is ready in ~1s
-      // instead of waiting for the slow attendance download. This removes the
-      // "Fetching user settings..." block that was delaying punches into half-day.
-      masterPromise.then((rows) => {
-        if (Array.isArray(rows) && rows.length) {
-          writeCache(MARK_ATTENDANCE_MASTER_CACHE_KEY, rows);
-          setMasterUsers(rows);
-          setInitialFetchDone(true);
-        }
-      });
-
-      const [rawAttendance, masterRows] = await Promise.all([attendancePromise, masterPromise]);
-      const grouped = {};
       const entries = [];
 
       rawAttendance.forEach((entry) => {
@@ -1001,17 +990,33 @@ const MarkAttendance = () => {
         return;
       }
 
-      const insertPromise = fetch(OUTSTATION_SCRIPT_URL, {
-        method: "POST",
-        mode: "no-cors",
-        body: new URLSearchParams({
-          sheetName: ATTENDANCE_SHEET_NAME,
-          action: "insert",
-          rowData: JSON.stringify(rowData),
-        }),
-      }).catch((err) => {
-        console.error("Background insert failed:", err);
-      });
+      // 1. Direct punch save to Supabase attendance table
+      const supaPayload = {
+        timestampe: timestamp,
+        date_and_time: timestamp,
+        status: statusToMark,
+        reason: reason.trim() || null,
+        latitude,
+        longitude,
+        map_link: mapLink,
+        address,
+        person_name: punchPersonName,
+        date: formatDateForSheet(now),
+        time: formatTimeForSheet(now),
+        year_name: String(now.getFullYear()),
+        month_name: now.toLocaleString("en-US", { month: "long" }),
+      };
+
+      // Direct punch save to Supabase attendance table
+      const { error: sbErr } = await supabase
+        .from("attendance")
+        .insert([supaPayload]);
+
+      if (sbErr) {
+        console.error("Supabase attendance insert error:", sbErr);
+        toast.error("Attendance mark nahi ho payi: " + sbErr.message);
+        return;
+      }
 
       const newEntry = {
         employeeName: punchPersonName,
@@ -1035,9 +1040,7 @@ const MarkAttendance = () => {
       toast.success(`${statusToMark} attendance marked`);
       setReason("");
 
-      insertPromise.then(() => {
-        fetchData({ silent: true }).catch(() => {});
-      });
+      fetchData({ silent: true }).catch(() => {});
     } catch (err) {
       console.error("Mark attendance error:", err);
       const isTrustedTimeError = err.name === "AbortError" || String(err.message || "").includes("Trusted time");

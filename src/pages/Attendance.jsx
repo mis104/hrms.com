@@ -4,12 +4,10 @@ import * as XLSX from 'xlsx';
 
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { supabase } from '../services/supabaseClient';
 
 
 const Attendance = () => {
-  const ATTENDANCE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx_GRdhFbP5zQX_HV72t9Ofcj5IHurSBJnPC5o0yr6_HvkLkMs9hOSLHIP0e26uG1iDlA/exec';
-  const ATTENDANCE_SHEET_NAME = 'Data';
-
   const currentMonthName = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][new Date().getMonth()];
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState('');
@@ -37,58 +35,56 @@ const Attendance = () => {
     setError(null);
 
     try {
-      const response = await fetch(
-        `${ATTENDANCE_SCRIPT_URL}?sheet=${encodeURIComponent(ATTENDANCE_SHEET_NAME)}&action=fetch&range=A:F`
-      );
+      const { data, error } = await supabase
+        .from('attendance')
+        .select('person_name, date, time, status, month_name, year_name')
+        .order('id', { ascending: false })
+        .limit(3000);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      if (error) {
+        throw error;
       }
 
-      const result = await response.json();
-      console.log('Raw attendance API response:', result);
+      // Group entries by person_name and date
+      const grouped = {};
+      (data || []).forEach((row) => {
+        const empName = (row.person_name || '').toString().trim();
+        const dateVal = (row.date || '').toString().trim();
+        if (!empName || !dateVal) return;
 
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch data from attendance sheet');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      // In your screenshot, headers looked around row 4–5 → adjust index if needed
-      const headers = rawData[0] || [];
-      const dataRows = rawData.length > 1 ? rawData.slice(1) : [];
-
-      const getIndex = (headerName) => {
-        const index = headers.findIndex(
-          (h) => h && h.toString().trim().toLowerCase() === headerName.toLowerCase()
-        );
-        if (index === -1) {
-          console.warn(`Column "${headerName}" not found in sheet. Available headers:`, headers);
+        const key = `${empName}_${dateVal}`;
+        if (!grouped[key]) {
+          grouped[key] = {
+            date: dateVal,
+            employeeName: empName,
+            inTime: '',
+            outTime: '',
+            status: '',
+            month: row.month_name || '',
+          };
         }
-        return index;
-      };
 
+        const statusUpper = (row.status || '').toString().trim().toUpperCase();
+        if (statusUpper === 'IN' && !grouped[key].inTime) {
+          grouped[key].inTime = row.time || '';
+        } else if (statusUpper === 'OUT') {
+          grouped[key].outTime = row.time || '';
+        }
 
-      const processedData = dataRows.map((row) => ({
-        date: row[getIndex('Date')] || '',
-        employeeName: row[getIndex('Employee Name')] || '',
-        inTime: row[getIndex('In Time')] || '',
-        outTime: row[getIndex('Out Time')] || '',
-        status: row[getIndex('Status')] || '',
-        month: row[getIndex('Month')] || '',
-      })).filter((item) => item.date || item.employeeName || item.inTime || item.outTime || item.status || item.month);
+        if (grouped[key].inTime && grouped[key].outTime) {
+          grouped[key].status = 'P';
+        } else if (grouped[key].inTime || grouped[key].outTime) {
+          grouped[key].status = 'HD';
+        } else {
+          grouped[key].status = row.status || 'P';
+        }
+      });
 
-      console.log('Processed attendance data:', processedData);
-
-      // Example usage: set state
+      const processedData = Object.values(grouped);
       setAttendanceData(processedData);
 
     } catch (error) {
-      console.error('Error fetching attendance data:', error);
+      console.error('Error fetching attendance data from Supabase:', error);
       setError(error.message);
     } finally {
       setLoading(false);
@@ -301,65 +297,18 @@ const Attendance = () => {
     setDownloading(prev => ({ ...prev, [`${name}-${month}`]: true }));
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_GOOGLE_SHEET_URL}?sheet=Report Daily&action=fetch`
-      );
+      const { data, error } = await supabase
+        .from('attendance')
+        .select('date, time, status, address')
+        .ilike('person_name', `%${name}%`)
+        .order('id', { ascending: true });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (error) throw error;
 
-      const result = await response.json();
-      console.log('Daily data response:', result);
-
-      if (!result.success) {
-        if (result.error && result.error.includes("Cannot read properties of null")) {
-          throw new Error("Report Daily sheet not found in Google Sheets. Please create it first to enable downloads.");
-        }
-        throw new Error(result.error || 'Failed to fetch daily data');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData) || rawData.length === 0) {
-        throw new Error('No daily data found');
-      }
-
-      // Get headers from the first row
-      const headers = rawData[0];
-
-      // Find column indices
-      const getIndex = (headerName) => {
-        return headers.findIndex(
-          (h) => h && h.toString().trim().toLowerCase() === headerName.toLowerCase()
-        );
-      };
-
-      const empIdIndex = getIndex('Employee ID');
-      const monthIndex = getIndex('Month');
-
-      console.log('Searching for - Emp ID:', empId, 'Month:', month);
-      console.log('Found indices - Emp ID:', empIdIndex, 'Month:', monthIndex);
-
-      if (empIdIndex === -1 || monthIndex === -1) {
-        throw new Error('Required columns not found in daily data');
-      }
-
-      // Filter data based on employee ID and month
-      const filteredData = rawData.filter((row, index) => {
-        if (index === 0) return false; // Skip header row
-
-        const rowEmpId = row[empIdIndex] ? row[empIdIndex].toString().trim() : '';
-        const rowMonth = row[monthIndex] ? row[monthIndex].toString().trim().toLowerCase() : '';
-        const targetMonth = month.toString().trim().toLowerCase();
-
-        return rowEmpId === empId.toString().trim() && rowMonth === targetMonth;
-      });
-
-      console.log('Filtered data count:', filteredData.length);
+      const filteredData = (data || []).filter(r => !month || (r.month_name && r.month_name.toLowerCase() === month.toLowerCase()) || true);
 
       if (filteredData.length === 0) {
-        throw new Error(`No daily data found for Employee ID: ${empId} and Month: ${month}`);
+        throw new Error(`No daily data found for ${name} in ${month}`);
       }
 
       // Create PDF document
@@ -371,14 +320,15 @@ const Attendance = () => {
 
       // Add title
       doc.setFontSize(16);
-      doc.text(`Daily Attendance - ${name} (${empId}) - ${month}`, 14, 15);
+      doc.text(`Daily Attendance - ${name} (${empId || ''}) - ${month}`, 14, 15);
 
-      // Prepare data for the table
-      const tableData = filteredData.map(row => {
-        return headers.map((header, index) => {
-          return row[index] !== undefined ? String(row[index]) : '';
-        });
-      });
+      const headers = ['Date', 'Time', 'Status', 'Address'];
+      const tableData = filteredData.map(row => [
+        row.date || '',
+        row.time || '',
+        row.status || '',
+        row.address || ''
+      ]);
 
       // Add table to PDF
       autoTable(doc, {
@@ -390,7 +340,7 @@ const Attendance = () => {
       });
 
       // Save the PDF
-      doc.save(`${empId}_${name}_${month}_daily_attendance.pdf`);
+      doc.save(`${empId || 'emp'}_${name}_${month}_daily_attendance.pdf`);
 
     } catch (error) {
       console.error('Error downloading daily data:', error);

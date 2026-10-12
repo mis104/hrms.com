@@ -1,15 +1,17 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, X, Plus } from 'lucide-react';
+import { 
+  Search, X, Plus, Share2, RefreshCw, Calendar, CheckCircle2, Clock, 
+  AlertCircle, ChevronLeft, ChevronRight, User, MapPin, Building2, 
+  FileText, Check, Layers, LayoutList, LayoutGrid, ArrowRight, ExternalLink
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 import { getUserRole } from '../utils/authRole';
+import { fetchLeaveRequests, createLeaveRequest, updateLeaveStatus, supabase } from '../services/supabaseService';
+import { triggerLeaveApprovalNotification, triggerLeaveRejectionNotification, triggerLeaveRequestNotification } from '../services/whatsappService';
 
-const LEAVE_API_URL = import.meta.env.VITE_LEAVE_REQUEST_SHEET_URL;
-const LEAVE_SHEET_NAME = 'FMS';
-const LEAVE_DATA_START_INDEX = 6;
-const LEAVE_REFRESH_INTERVAL_MS = 30000;
+const LEAVE_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const LEAVE_PAGE_SIZE = 50;
-const LEAVE_PROCESS_CHUNK_SIZE = 500;
 
 const normalizeMatchValue = (value) =>
   (value || '').toString().trim().replace(/\s+/g, ' ').toLowerCase();
@@ -43,6 +45,57 @@ const getCurrentUserAliases = (user = {}) => {
   return [...new Set(values.map(normalizeMatchValue).filter(Boolean))];
 };
 
+const getInitials = (name) => {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+};
+
+const getAvatarGradient = (name) => {
+  const gradients = [
+    "from-indigo-500 to-purple-600",
+    "from-blue-500 to-cyan-600",
+    "from-emerald-500 to-teal-600",
+    "from-violet-500 to-fuchsia-600",
+    "from-amber-500 to-orange-600",
+    "from-rose-500 to-pink-600"
+  ];
+  if (!name) return gradients[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash += name.charCodeAt(i);
+  return gradients[hash % gradients.length];
+};
+
+const formatDateToDDMMYYYY = (dateVal) => {
+  if (!dateVal) return '-';
+  try {
+    const d = new Date(dateVal);
+    if (!isNaN(d.getTime())) {
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      return `${day}-${month}-${year}`;
+    }
+    return String(dateVal);
+  } catch {
+    return String(dateVal);
+  }
+};
+
+const formatLeaveDays = (fromDate, toDate) => {
+  if (!fromDate || !toDate) return '0 days';
+  try {
+    const start = new Date(fromDate);
+    const end = new Date(toDate);
+    const diffTime = Math.abs(end - start);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    return `${diffDays} ${diffDays === 1 ? 'day' : 'days'}`;
+  } catch {
+    return '0 days';
+  }
+};
+
 const LeaveManagement = () => {
   const authUser = useAuthStore((state) => state.user);
   const [searchTerm, setSearchTerm] = useState('');
@@ -57,9 +110,10 @@ const LeaveManagement = () => {
   const [actionInProgress, setActionInProgress] = useState(null);
   const [editableDates, setEditableDates] = useState({ from: '', to: '' });
   const [visibleLimit, setVisibleLimit] = useState(LEAVE_PAGE_SIZE);
+  const [viewMode, setViewMode] = useState('table'); // 'table' or 'grid'
   const leaveFetchInProgressRef = useRef(false);
 
-  // New state for leave request modal
+  // Leave request modal state
   const [showModal, setShowModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [employees, setEmployees] = useState([]);
@@ -102,587 +156,73 @@ const LeaveManagement = () => {
     [currentUserAliases, shouldShowOnlyOwnLeaves]
   );
 
-  const handleCheckboxChange = (leaveId, rowData) => {
-    if (selectedRow?.serialNo === leaveId) {
-      setSelectedRow(null);
-      setEditableDates({ from: '', to: '' });
-    } else {
-      // Convert DD/MM/YYYY to YYYY-MM-DD for date input
-      const formatForInput = (dateStr) => {
-        const formattedDate = formatDOB(dateStr);
-        if (!formattedDate || !formattedDate.includes('/')) return '';
-        const [day, month, year] = formattedDate.split('/');
-        if (!day || !month || !year) return '';
-        return `${year}-${month}-${day}`;
-      };
-
-      setSelectedRow(rowData);
-      setEditableDates({
-        from: formatForInput(rowData.startDate),
-        to: formatForInput(rowData.endDate)
-      });
-    }
-  };
-
-  const handleDateChange = (field, value) => {
-    setEditableDates(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const getJoiningFetchUrl = () =>
-    `${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS`;
-
-  const getColumnIndex = (headers, names, fallbackIndex) => {
-    const normalizedNames = names.map((name) => name.toLowerCase());
-    const index = headers.findIndex((header) => {
-      const value = header?.toString().trim().toLowerCase();
-      return value && normalizedNames.some((name) => value === name || value.includes(name));
-    });
-    return index !== -1 ? index : fallbackIndex;
-  };
-
-  // Fetch employees from JOINING_FMS sheet
   const fetchEmployees = async () => {
-    if (employees.length > 0 || employeesLoading) return;
-
     try {
       setEmployeesLoading(true);
-      const response = await fetch(getJoiningFetchUrl());
+      const { data, error } = await supabase
+        .from('employees')
+        .select('id, employee_code, candidate_name, designation, department, joining_place')
+        .eq('is_active', true)
+        .order('candidate_name', { ascending: true })
+        .limit(300);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (error) throw error;
 
-      const result = await response.json();
+      const formatted = (data || []).map(emp => ({
+        id: emp.id,
+        code: emp.employee_code,
+        name: emp.candidate_name,
+        designation: emp.designation || '',
+        department: emp.department || '',
+        location: emp.joining_place || ''
+      }));
 
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch employee data');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      const headers = rawData[6] || [];
-      const idIndex = getColumnIndex(headers, ['Joining ID', 'Indent Number', 'ID'], 5);
-      const nameIndex = getColumnIndex(headers, ['Candidate Name', 'Name As Per Aadhar', 'Employee Name'], 10);
-      const designationIndex = getColumnIndex(headers, ['Designation'], 14);
-      const jobLocationIndex = getColumnIndex(headers, ['Joining Place', 'Job Location', 'Location'], 13);
-      const departmentIndex = getColumnIndex(headers, ['Department'], 2);
-
-      // JOINING_FMS data starts from row 8 (index 7)
-      const employeeData = rawData.slice(7).map((row, index) => ({
-        id: row[idIndex] || '',
-        name: row[nameIndex] || '',
-        designation: row[designationIndex] || '',
-        jobLocation: row[jobLocationIndex] || '',
-        department: row[departmentIndex] || '',
-        rowIndex: index + 8
-      })).filter(emp => emp.name && emp.id);
-
-      setEmployees(employeeData);
-    } catch (error) {
-      console.error('Error fetching employee data:', error);
-      toast.error(`Failed to load employee data: ${error.message}`);
+      setEmployees(formatted);
+    } catch (err) {
+      console.error('Failed to fetch employees:', err);
     } finally {
       setEmployeesLoading(false);
     }
   };
 
-
-  // Handle employee selection
-  const handleEmployeeChange = (selectedName) => {
-    const selectedEmployee = employees.find(emp => emp.name === selectedName);
-    setFormData(prev => ({
-      ...prev,
-      employeeName: selectedName,
-      employeeId: selectedEmployee ? selectedEmployee.id : '',
-      designation: selectedEmployee ? selectedEmployee.designation : '',
-      department: selectedEmployee ? selectedEmployee.department : '',
-      jobLocation: selectedEmployee ? selectedEmployee.jobLocation : ''
-    }));
-  };
-
-  // Handle form input changes
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-
     if (name === 'employeeName') {
-      handleEmployeeChange(value);
-    } else {
-      setFormData(prev => ({
-        ...prev,
-        [name]: value
-      }));
-    }
-  };
-
-  const formatDateToDDMMYYYY = (dateValue) => {
-    if (!dateValue) return '';
-
-    if (dateValue instanceof Date && !isNaN(dateValue.getTime())) {
-      const day = String(dateValue.getDate()).padStart(2, '0');
-      const month = String(dateValue.getMonth() + 1).padStart(2, '0');
-      return `${day}/${month}/${dateValue.getFullYear()}`;
-    }
-
-    const rawValue = dateValue.toString().trim();
-    if (!rawValue) return '';
-
-    if (rawValue.includes('T') && rawValue.includes(':')) {
-      const parsedDate = new Date(rawValue);
-      if (!isNaN(parsedDate.getTime())) {
-        const day = String(parsedDate.getDate()).padStart(2, '0');
-        const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
-        return `${day}/${month}/${parsedDate.getFullYear()}`;
+      const selected = employees.find(emp => emp.name === value);
+      if (selected) {
+        setFormData(prev => ({
+          ...prev,
+          employeeName: value,
+          employeeId: selected.code || '',
+          designation: selected.designation || '',
+          department: selected.department || '',
+          jobLocation: selected.location || ''
+        }));
+        return;
       }
     }
-
-    const datePart = rawValue.split(/[ T]/)[0];
-    const isoMatch = datePart.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if (isoMatch) {
-      return `${isoMatch[3].padStart(2, '0')}/${isoMatch[2].padStart(2, '0')}/${isoMatch[1]}`;
-    }
-
-    if (datePart.includes('/')) {
-      const [first, second, year] = datePart.split('/');
-      if (first && second && year) {
-        const firstNumber = Number(first);
-        const secondNumber = Number(second);
-        const day = secondNumber > 12 && firstNumber <= 12 ? second : first;
-        const month = secondNumber > 12 && firstNumber <= 12 ? first : second;
-        return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
-      }
-    }
-
-    const parsedDate = new Date(rawValue);
-    if (isNaN(parsedDate.getTime())) return rawValue;
-
-    const day = String(parsedDate.getDate()).padStart(2, '0');
-    const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
-    return `${day}/${month}/${parsedDate.getFullYear()}`;
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const parseSheetDate = (dateValue) => {
-    const formattedDate = formatDateToDDMMYYYY(dateValue);
-    if (!formattedDate || !formattedDate.includes('/')) return null;
-    const [day, month, year] = formattedDate.split('/').map(Number);
-    const date = new Date(year, month - 1, day);
-    return isNaN(date.getTime()) ? null : date;
-  };
+  const setLeaveLists = (data = []) => {
+    const pending = [];
+    const approved = [];
+    const rejected = [];
 
-  // Calculate days between dates
-  const calculateDays = (startDateStr, endDateStr) => {
-    const startDate = parseSheetDate(startDateStr);
-    const endDate = parseSheetDate(endDateStr);
-    if (!startDate || !endDate) return 0;
-
-    const diffTime = endDate - startDate;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    return diffDays;
-  };
-
-  const formatDOB = (dateString) => formatDateToDDMMYYYY(dateString);
-
-  const getLeaveFetchUrl = () =>
-    `${LEAVE_API_URL}?sheet=${encodeURIComponent(LEAVE_SHEET_NAME)}&action=fetch`;
-
-  const formatSheetTimestamp = () => {
-    const now = new Date();
-    const dd = String(now.getDate()).padStart(2, '0');
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const yyyy = now.getFullYear();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const min = String(now.getMinutes()).padStart(2, '0');
-    const ss = String(now.getSeconds()).padStart(2, '0');
-    return `${dd}/${mm}/${yyyy} ${hh}:${min}:${ss}`;
-  };
-
-  const formatLeaveDays = (fromDate, toDate) => {
-    const days = calculateDays(fromDate, toDate);
-    if (!days) return '';
-    return `${days} ${days === 1 ? 'day' : 'days'}`;
-  };
-
-  const hasSheetValue = (value) =>
-    value !== null && value !== undefined && value.toString().trim() !== '';
-
-  const normalizeApprovalStatus = (status) => {
-    const value = status?.toString().trim().toLowerCase();
-    if (value === 'approved' || value === 'approve') return 'approved';
-    if (value === 'rejected' || value === 'reject') return 'rejected';
-    return '';
-  };
-
-  const getApprovalStatus = (row) => {
-    const approvalStatus = normalizeApprovalStatus(row[15]);
-    if (approvalStatus) return approvalStatus;
-    if (hasSheetValue(row[11]) && !hasSheetValue(row[12])) return 'Pending';
-    return '';
-  };
-
-  const getCurrentApproverName = () => {
-    try {
-      const rawUser = localStorage.getItem('user');
-      const user = rawUser ? JSON.parse(rawUser) : {};
-      return user.Name || user.name || user['Employee Name'] || user.Username || user.username || 'Admin';
-    } catch {
-      return 'Admin';
-    }
-  };
-
-  const getNextLeaveRequestNo = (rows) => {
-    const maxNo = rows
-      .slice(LEAVE_DATA_START_INDEX)
-      .reduce((max, row) => {
-        const match = row[1]?.toString().match(/LR-?(\d+)/i);
-        return match ? Math.max(max, Number(match[1])) : max;
-      }, 0);
-
-    return `LR-${String(maxNo + 1).padStart(2, '0')}`;
-  };
-
-  const mapLeaveRow = (row, index) => {
-    let displayDays = row[4] || '';
-    if (displayDays && !isNaN(Number(displayDays))) {
-      const num = Number(displayDays);
-      displayDays = `${num} ${num === 1 ? 'day' : 'days'}`;
-    } else if (!displayDays) {
-      displayDays = formatLeaveDays(row[6], row[7]);
-    }
-
-    return {
-      timestamp: row[0] || '',
-      leaveRequestId: row[1] || '',
-      requestedBy: row[2] || '',
-      department: row[3] || '',
-      totalLeaves: displayDays,
-      jobLocation: row[5] || '',
-      leaveFromDate: row[6] || '',
-      leaveToDate: row[7] || '',
-      leaveReason: row[8] || '',
-      remark: row[9] || '',
-      imageUrl: row[10] || '',
-      approvalPlanned: row[11] || '',
-      approvalActual: row[12] || '',
-      approvalDelay: row[13] || '',
-      approvedBy: row[14] || '',
-      approvalStatus: row[15] || '',
-      approvalRemarks: row[16] || '',
-      serialNo: row[1] || '',
-      employeeId: row[1] || '',
-      employeeName: row[2] || '',
-      startDate: row[6] || '',
-      endDate: row[7] || '',
-      days: displayDays,
-      status: getApprovalStatus(row),
-      approvalPending: hasSheetValue(row[11]) && !hasSheetValue(row[12]),
-      sheetRowIndex: index + LEAVE_DATA_START_INDEX + 1,
-    };
-  };
-
-  const processLeaveRows = (rows) => {
-    return rows
-      .map((row, index) => mapLeaveRow(row, index))
-      .filter((leave) => leave.serialNo || leave.employeeName || leave.startDate);
-  };
-
-  const splitLeaveLists = (leaves) => ({
-    pending: leaves.filter((leave) => leave.approvalPending),
-    approved: leaves.filter((leave) =>
-      leave.status?.toString().toLowerCase() === 'approved'
-    ),
-    rejected: leaves.filter((leave) =>
-      leave.status?.toString().toLowerCase() === 'rejected'
-    ),
-  });
-
-  const setLeaveLists = (leaves) => {
-    const nextLists = splitLeaveLists(leaves);
-    setPendingLeaves(nextLists.pending);
-    setApprovedLeaves(nextLists.approved);
-    setRejectedLeaves(nextLists.rejected);
-  };
-
-  const restoreLeaveLists = (snapshot) => {
-    setPendingLeaves(snapshot.pending);
-    setApprovedLeaves(snapshot.approved);
-    setRejectedLeaves(snapshot.rejected);
-  };
-
-  const applyLocalLeaveChange = (updatedLeave) => {
-    const nextLeaves = [
-      updatedLeave,
-      ...pendingLeaves,
-      ...approvedLeaves,
-      ...rejectedLeaves,
-    ].filter((leave, index) => {
-      if (!updatedLeave.serialNo) return index === 0 || leave !== updatedLeave;
-      return index === 0 || leave.serialNo !== updatedLeave.serialNo;
+    data.forEach(item => {
+      const st = (item.approvalStatus || item.status || '').toLowerCase();
+      if (st === 'approved') approved.push(item);
+      else if (st === 'rejected') rejected.push(item);
+      else pending.push(item);
     });
 
-    setLeaveLists(nextLeaves);
-  };
-
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!formData.employeeName || !formData.department || !formData.jobLocation || !formData.fromDate || !formData.toDate || !formData.reason) {
-      toast.error('Please fill all required fields');
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-      const dataResponse = await fetch(getLeaveFetchUrl());
-      const dataResult = await dataResponse.json();
-      const existingRows = Array.isArray(dataResult.data) ? dataResult.data : [];
-      const formattedTimestamp = formatSheetTimestamp();
-      const leaveRequestNo = getNextLeaveRequestNo(existingRows);
-
-      const rawDays = calculateDays(formData.fromDate, formData.toDate);
-      const rowData = [
-        formattedTimestamp,
-        leaveRequestNo,
-        formData.employeeName,
-        formData.department || formData.designation,
-        rawDays || '',
-        formData.jobLocation || '',
-        formatDOB(formData.fromDate),
-        formatDOB(formData.toDate),
-        formData.reason,
-        formData.remark,
-        formData.imageUrl,
-      ];
-
-      const response = await fetch(LEAVE_API_URL, {
-        method: 'POST',
-        body: new URLSearchParams({
-          sheetName: LEAVE_SHEET_NAME,
-          action: 'insert',
-          rowData: JSON.stringify(rowData),
-        }),
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        const optimisticLeave = {
-          timestamp: formattedTimestamp,
-          leaveRequestId: leaveRequestNo,
-          requestedBy: formData.employeeName,
-          department: formData.department || formData.designation,
-          totalLeaves: formatLeaveDays(formData.fromDate, formData.toDate),
-          jobLocation: formData.jobLocation || '',
-          leaveFromDate: formatDOB(formData.fromDate),
-          leaveToDate: formatDOB(formData.toDate),
-          leaveReason: formData.reason,
-          remark: formData.remark,
-          imageUrl: formData.imageUrl,
-          approvalPlanned: '',
-          approvalActual: '',
-          approvalDelay: '',
-          approvedBy: '',
-          approvalStatus: 'Pending',
-          approvalRemarks: '',
-          serialNo: leaveRequestNo,
-          employeeId: leaveRequestNo,
-          employeeName: formData.employeeName,
-          startDate: formatDOB(formData.fromDate),
-          endDate: formatDOB(formData.toDate),
-          days: formatLeaveDays(formData.fromDate, formData.toDate),
-          status: 'Pending',
-          approvalPending: true,
-          sheetRowIndex: existingRows.length + 1,
-        };
-
-        applyLocalLeaveChange(optimisticLeave);
-        toast.success('Leave Request submitted successfully!');
-        setFormData({
-          employeeId: '',
-          employeeName: '',
-          designation: '',
-          department: '',
-          jobLocation: '',
-          fromDate: '',
-          toDate: '',
-          reason: '',
-          remark: '',
-          imageUrl: ''
-        });
-        setShowModal(false);
-        window.setTimeout(() => {
-          fetchLeaveData({ showLoader: false, silent: true });
-        }, 1200);
-      } else {
-        toast.error('Failed to insert: ' + (result.error || 'Unknown error'));
-      }
-    } catch (error) {
-      console.error('Insert error:', error);
-      toast.error('Something went wrong!');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleLeaveAction = async (action) => {
-    if (!selectedRow) {
-      toast.error('Please select a leave request');
-      return;
-    }
-
-    const actionStatus = action === 'accept' ? 'Approved' : 'Rejected';
-    const approvalRemark = window.prompt(`Enter remarks for ${actionStatus}`, selectedRow.approvalRemarks || '');
-    if (approvalRemark === null) {
-      return;
-    }
-
-    const previousLists = {
-      pending: pendingLeaves,
-      approved: approvedLeaves,
-      rejected: rejectedLeaves,
-    };
-    const previousEditableDates = editableDates;
-
-    setActionInProgress(action);
-    setLoading(true);
-
-    try {
-      const selectedStartDate = formatDOB(selectedRow.startDate);
-      const selectedEndDate = formatDOB(selectedRow.endDate);
-      const finalFromDate = editableDates.from ? formatDOB(editableDates.from) : selectedStartDate;
-      const finalToDate = editableDates.to ? formatDOB(editableDates.to) : selectedEndDate;
-      const fromDateChanged = Boolean(finalFromDate) && finalFromDate !== selectedStartDate;
-      const toDateChanged = Boolean(finalToDate) && finalToDate !== selectedEndDate;
-      
-      let rawFinalLeaveDays = '';
-      if (fromDateChanged || toDateChanged) {
-        rawFinalLeaveDays = calculateDays(finalFromDate, finalToDate) || '';
-      } else {
-        const storedDays = selectedRow.totalLeaves || selectedRow.days;
-        rawFinalLeaveDays = !isNaN(Number(storedDays?.toString().split(' ')[0])) 
-          ? Number(storedDays.toString().split(' ')[0]) 
-          : storedDays;
-      }
-      
-      const finalLeaveDaysDisplay = rawFinalLeaveDays 
-        ? (!isNaN(Number(rawFinalLeaveDays)) 
-            ? `${Number(rawFinalLeaveDays)} ${Number(rawFinalLeaveDays) === 1 ? 'day' : 'days'}` 
-            : rawFinalLeaveDays)
-        : selectedRow.days;
-      
-      const approvalActual = formatSheetTimestamp();
-      const approverName = getCurrentApproverName();
-
-      applyLocalLeaveChange({
-        ...selectedRow,
-        leaveFromDate: finalFromDate,
-        leaveToDate: finalToDate,
-        startDate: finalFromDate,
-        endDate: finalToDate,
-        totalLeaves: finalLeaveDaysDisplay,
-        days: finalLeaveDaysDisplay,
-        approvalActual,
-        approvedBy: approverName,
-        approvalStatus: actionStatus,
-        approvalRemarks: approvalRemark,
-        status: actionStatus,
-        approvalPending: false,
-      });
-
-      setSelectedRow(null);
-      setEditableDates({ from: '', to: '' });
-
-      let rowIndex = selectedRow.sheetRowIndex;
-
-      if (!rowIndex) {
-        const fullDataResponse = await fetch(getLeaveFetchUrl());
-
-        if (!fullDataResponse.ok) {
-          throw new Error(`HTTP error! status: ${fullDataResponse.status}`);
-        }
-
-        const fullDataResult = await fullDataResponse.json();
-        const allData = fullDataResult.data || fullDataResult;
-
-        rowIndex = allData.findIndex((row, idx) =>
-          idx >= LEAVE_DATA_START_INDEX &&
-          row[1]?.toString().trim() === selectedRow.serialNo?.toString().trim()
-        ) + 1;
-      }
-
-      if (!rowIndex || rowIndex < 1) {
-        throw new Error(`Leave request not found for ${selectedRow.requestedBy || selectedRow.leaveRequestId}`);
-      }
-
-      const updates = [];
-
-      // Update dates if they were changed (Column G and H)
-      if (fromDateChanged) {
-        updates.push({ columnIndex: 7, value: finalFromDate });
-      }
-
-      if (toDateChanged) {
-        updates.push({ columnIndex: 8, value: finalToDate });
-      }
-
-      if (fromDateChanged || toDateChanged) {
-        updates.push({ columnIndex: 5, value: rawFinalLeaveDays });
-      }
-
-      updates.push(
-        { columnIndex: 13, value: approvalActual },
-        { columnIndex: 15, value: approverName },
-        { columnIndex: 16, value: actionStatus },
-        { columnIndex: 17, value: approvalRemark }
-      );
-
-      const results = await Promise.all(updates.map((update) =>
-        fetch(LEAVE_API_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({
-            sheetName: LEAVE_SHEET_NAME,
-            action: "updateCell",
-            rowIndex,
-            columnIndex: update.columnIndex,
-            value: update.value
-          }).toString(),
-        }).then((res) => res.json())
-      ));
-
-      if (results.every((result) => result.success)) {
-        toast.success(`Leave ${action === 'accept' ? 'approved' : 'rejected'} for ${selectedRow.requestedBy || 'employee'}`);
-        fetchLeaveData({ showLoader: false, silent: true });
-      } else {
-        const failed = results.find((result) => !result.success);
-        throw new Error(failed?.error || "Update failed");
-      }
-
-    } catch (error) {
-      restoreLeaveLists(previousLists);
-      setSelectedRow(selectedRow);
-      setEditableDates(previousEditableDates);
-      console.error('Update error:', error);
-      toast.error(`Failed to ${action} leave: ${error.message}`);
-    } finally {
-      setLoading(false);
-      setActionInProgress(null);
-    }
+    setPendingLeaves(pending);
+    setApprovedLeaves(approved);
+    setRejectedLeaves(rejected);
   };
 
   const fetchLeaveData = async ({ showLoader = true, silent = false } = {}) => {
-    if (leaveFetchInProgressRef.current) {
-      return;
-    }
-
+    if (leaveFetchInProgressRef.current) return;
     leaveFetchInProgressRef.current = true;
 
     if (showLoader) {
@@ -690,37 +230,51 @@ const LeaveManagement = () => {
       setTableLoading(true);
     }
 
-    if (!silent) {
-      setError(null);
-    }
+    if (!silent) setError(null);
 
     try {
-      const response = await fetch(
-        getLeaveFetchUrl()
-      );
+      const res = await fetchLeaveRequests({ limit: 500 });
+      if (!res.success) throw new Error(res.error || 'Failed to fetch leave data');
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      const processedData = (res.data || []).map((row) => {
+        let displayDays = row.total_leaves ? `${row.total_leaves} ${row.total_leaves === 1 ? 'day' : 'days'}` : '';
+        if (!displayDays && row.leave_from_date && row.leave_to_date) {
+          displayDays = formatLeaveDays(row.leave_from_date, row.leave_to_date);
+        }
 
-      const result = await response.json();
+        const status = row.approval_status || 'Pending';
 
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to fetch leave data');
-      }
-
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) {
-        throw new Error('Expected array data not received');
-      }
-
-      const dataRows = rawData.length > LEAVE_DATA_START_INDEX ? rawData.slice(LEAVE_DATA_START_INDEX) : [];
-      const processedData = processLeaveRows(dataRows);
+        return {
+          id: row.id,
+          timestamp: row.timestamp || row.created_at,
+          leaveRequestId: row.leave_request_no || '',
+          requestedBy: row.requested_by || '',
+          department: row.department || '',
+          totalLeaves: displayDays,
+          jobLocation: row.job_location || '',
+          leaveFromDate: row.leave_from_date || '',
+          leaveToDate: row.leave_to_date || '',
+          leaveReason: row.leave_reason || '',
+          remark: row.remark || '',
+          imageUrl: row.image_url || '',
+          approvalPlanned: row.approval_planned || '',
+          approvalActual: row.approval_actual || '',
+          approvalDelay: row.approval_delay || '',
+          approvedBy: row.approved_by || '',
+          approvalStatus: status,
+          approvalRemarks: row.approval_remarks || '',
+          serialNo: row.leave_request_no || '',
+          employeeId: row.leave_request_no || '',
+          employeeName: row.requested_by || '',
+          startDate: row.leave_from_date || '',
+          endDate: row.leave_to_date || '',
+          days: displayDays,
+          status: status,
+        };
+      });
 
       setLeaveLists(processedData);
       setError(null);
-
     } catch (error) {
       console.error('Error fetching leave data:', error);
       if (!silent) {
@@ -729,7 +283,6 @@ const LeaveManagement = () => {
       }
     } finally {
       leaveFetchInProgressRef.current = false;
-
       if (showLoader) {
         setLoading(false);
         setTableLoading(false);
@@ -756,11 +309,6 @@ const LeaveManagement = () => {
     }
   }, [showModal]);
 
-  const formatDate = (dateString) => {
-    if (!dateString) return '-';
-    return formatDateToDDMMYYYY(dateString) || '-';
-  };
-
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const normalizedSearchTerm = deferredSearchTerm.trim().toLowerCase();
 
@@ -784,7 +332,9 @@ const LeaveManagement = () => {
     item.requestedBy?.toString().toLowerCase().includes(normalizedSearchTerm) ||
     item.employeeName?.toString().toLowerCase().includes(normalizedSearchTerm) ||
     item.employeeId?.toString().toLowerCase().includes(normalizedSearchTerm) ||
-    item.leaveRequestId?.toString().toLowerCase().includes(normalizedSearchTerm);
+    item.leaveRequestId?.toString().toLowerCase().includes(normalizedSearchTerm) ||
+    item.leaveReason?.toString().toLowerCase().includes(normalizedSearchTerm) ||
+    item.department?.toString().toLowerCase().includes(normalizedSearchTerm);
 
   const filteredPendingLeaves = useMemo(
     () => scopedPendingLeaves.filter(matchesLeaveSearch),
@@ -820,609 +370,729 @@ const LeaveManagement = () => {
     [filteredRejectedLeaves, visibleLimit]
   );
 
-  const activeFilteredCount =
-    activeTab === 'approved'
-      ? filteredApprovedLeaves.length
-      : activeTab === 'rejected'
-        ? filteredRejectedLeaves.length
+  const currentDisplayList = 
+    activeTab === 'approved' 
+      ? displayedApprovedLeaves 
+      : activeTab === 'rejected' 
+        ? displayedRejectedLeaves 
+        : displayedPendingLeaves;
+
+  const currentFilteredTotal = 
+    activeTab === 'approved' 
+      ? filteredApprovedLeaves.length 
+      : activeTab === 'rejected' 
+        ? filteredRejectedLeaves.length 
         : filteredPendingLeaves.length;
 
-  const activeVisibleCount = Math.min(visibleLimit, activeFilteredCount);
-
-  const renderPendingLeavesTable = () => (
-    <table className="min-w-full divide-y divide-white">
-      <thead className="bg-gray-100">
-        <tr>
-          {!shouldShowOnlyOwnLeaves && (
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Select
-            </th>
-          )}
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LR-Unique No.</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requested By</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Leaves</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request Remark</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Image</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Department</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job Location</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Planned</th>
-          {!shouldShowOnlyOwnLeaves && (
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-          )}
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-white">
-        {filteredPendingLeaves.length > 0 ? (
-          displayedPendingLeaves.map((item, index) => (
-            <tr key={item.serialNo || index} className="hover:bg-white">
-              {!shouldShowOnlyOwnLeaves && (
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <input
-                    type="checkbox"
-                    checked={selectedRow?.serialNo === item.serialNo}
-                    onChange={() => handleCheckboxChange(item.serialNo, item)}
-                    className="h-4 w-4 text-navy focus:ring-navy border-gray-300 rounded"
-                  />
-                </td>
-              )}
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveRequestId}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.requestedBy}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {selectedRow?.serialNo === item.serialNo ? (
-                  <input
-                    type="date"
-                    value={editableDates.from}
-                    onChange={(e) => handleDateChange('from', e.target.value)}
-                    className="border rounded p-1 text-sm"
-                  />
-                ) : (
-                  formatDate(item.startDate)
-                )}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {selectedRow?.serialNo === item.serialNo ? (
-                  <input
-                    type="date"
-                    value={editableDates.to}
-                    onChange={(e) => handleDateChange('to', e.target.value)}
-                    className="border rounded p-1 text-sm"
-                  />
-                ) : (
-                  formatDate(item.endDate)
-                )}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {selectedRow?.serialNo === item.serialNo ?
-                  calculateDays(editableDates.from, editableDates.to) :
-                  item.days
-                }
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveReason}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.remark}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {item.imageUrl ? (
-                  <a href={item.imageUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800">
-                    View
-                  </a>
-                ) : '-'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.department}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.jobLocation}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(item.approvalPlanned)}</td>
-              {!shouldShowOnlyOwnLeaves && (
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  <div className="flex space-x-2">
-                    <button
-                      onClick={() => handleLeaveAction('accept')}
-                      disabled={!selectedRow || selectedRow.serialNo !== item.serialNo || loading}
-                      className={`px-4 py-2 text-white bg-green-600 rounded-md hover:bg-green-700 min-h-[42px] flex items-center justify-center ${!selectedRow || selectedRow.serialNo !== item.serialNo || loading ? 'opacity-75 cursor-not-allowed' : ''
-                        }`}
-                    >
-                      {loading && selectedRow?.serialNo === item.serialNo && actionInProgress === 'accept' ? (
-                        <div className="flex items-center">
-                          <svg
-                            className="animate-spin h-4 w-4 text-white mr-2"
-                            xmlns="http://www.w3.org/2000/svg"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                          >
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          <span>Accepting...</span>
-                        </div>
-                      ) : 'Accept'}
-                    </button>
-                    <button
-                      onClick={() => handleLeaveAction('rejected')}
-                      disabled={selectedRow?.serialNo !== item.serialNo || loading}
-                      className={`px-4 py-2 text-white bg-red-600 rounded-md hover:bg-red-700 min-h-[42px] flex items-center justify-center ${selectedRow?.serialNo !== item.serialNo || (loading && actionInProgress === 'accept') ? 'opacity-75 cursor-not-allowed' : ''
-                        }`}
-                    >
-                      {loading && selectedRow?.serialNo === item.serialNo && actionInProgress === 'rejected' ? (
-                        <div className="flex items-center">
-                          <svg
-                            className="animate-spin h-4 w-4 text-white mr-2"
-                            xmlns="http://www.w3.org/2000/svg"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                          >
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          <span>Rejecting...</span>
-                        </div>
-                      ) : 'Reject'}
-                    </button>
-                  </div>
-                </td>
-              )}
-            </tr>
-          ))
-        ) : (
-          <tr>
-            <td colSpan={shouldShowOnlyOwnLeaves ? 11 : 13} className="px-6 py-12 text-center">
-              <p className="text-gray-500">No pending leave requests found.</p>
-            </td>
-          </tr>
-        )}
-      </tbody>
-    </table>
-  );
-
-  const renderApprovedLeavesTable = () => (
-    <table className="min-w-full divide-y divide-white">
-      <thead className="bg-gray-100">
-        <tr>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LR-Unique No.</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requested By</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Leaves</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request Remark</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Image</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Department</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job Location</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Planned</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actual</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delay</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approved By</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approval Remarks</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-white">
-        {filteredApprovedLeaves.length > 0 ? (
-          displayedApprovedLeaves.map((item, index) => (
-            <tr key={item.serialNo || index} className="hover:bg-white">
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveRequestId}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.requestedBy}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {formatDate(item.startDate)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {formatDate(item.endDate)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.days}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveReason}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.remark}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {item.imageUrl ? (
-                  <a href={item.imageUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800">
-                    View
-                  </a>
-                ) : '-'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.department}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.jobLocation}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(item.approvalPlanned)}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(item.approvalActual)}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalDelay}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvedBy}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalStatus || item.status}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalRemarks}</td>
-            </tr>
-          ))
-        ) : (
-          <tr>
-            <td colSpan="16" className="px-6 py-12 text-center">
-              <p className="text-gray-500">No approved leave requests found.</p>
-            </td>
-          </tr>
-        )}
-      </tbody>
-    </table>
-  );
-
-  const renderRejectedLeavesTable = () => (
-    <table className="min-w-full divide-y divide-white">
-      <thead className="bg-gray-100">
-        <tr>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LR-Unique No.</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requested By</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">From</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">To</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Leaves</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Request Remark</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Image</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Department</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Job Location</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Planned</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actual</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delay</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approved By</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approval Remarks</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-white">
-        {filteredRejectedLeaves.length > 0 ? (
-          displayedRejectedLeaves.map((item, index) => (
-            <tr key={item.serialNo || index} className="hover:bg-white">
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveRequestId}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.requestedBy}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {formatDate(item.startDate)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {formatDate(item.endDate)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.days}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.leaveReason}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.remark}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {item.imageUrl ? (
-                  <a href={item.imageUrl} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:text-indigo-800">
-                    View
-                  </a>
-                ) : '-'}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.department}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.jobLocation}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(item.approvalPlanned)}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(item.approvalActual)}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalDelay}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvedBy}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalStatus || item.status}</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.approvalRemarks}</td>
-            </tr>
-          ))
-        ) : (
-          <tr>
-            <td colSpan="16" className="px-6 py-12 text-center">
-              <p className="text-gray-500">No rejected leave requests found.</p>
-            </td>
-          </tr>
-        )}
-      </tbody>
-    </table>
-  );
-
-  const renderTable = () => {
-    switch (activeTab) {
-      case 'pending':
-        return renderPendingLeavesTable();
-      case 'approved':
-        return renderApprovedLeavesTable();
-      case 'rejected':
-        return renderRejectedLeavesTable();
-      default:
-        return renderPendingLeavesTable();
-    }
-  };
-
-  const getActiveMobileRows = () => {
-    if (activeTab === 'approved') return displayedApprovedLeaves;
-    if (activeTab === 'rejected') return displayedRejectedLeaves;
-    return displayedPendingLeaves;
-  };
-
-  const getActiveEmptyMessage = () => {
-    if (activeTab === 'approved') return 'No approved leave requests found.';
-    if (activeTab === 'rejected') return 'No rejected leave requests found.';
-    return 'No pending leave requests found.';
-  };
-
-  const renderLeaveMobileCards = () => {
-    const rows = getActiveMobileRows();
-
-    if (!rows.length) {
-      return (
-        <div className="md:hidden rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <p className="text-sm font-bold text-slate-500">{getActiveEmptyMessage()}</p>
-        </div>
-      );
-    }
-
+  const getCurrentApproverName = () => {
     return (
-      <div className="space-y-3 md:hidden">
-        {rows.map((item, index) => {
-          const isPending = activeTab === 'pending';
-          const canApproveLeaves = !shouldShowOnlyOwnLeaves;
-          const isSelected = selectedRow?.serialNo === item.serialNo;
-          const statusLabel = isPending ? 'Pending' : item.approvalStatus || item.status || activeTab;
-          const statusClass = activeTab === 'approved'
-            ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-            : activeTab === 'rejected'
-              ? 'bg-rose-50 text-rose-700 border-rose-100'
-              : 'bg-amber-50 text-amber-700 border-amber-100';
-
-          return (
-            <article key={item.serialNo || index} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{item.leaveRequestId || '-'}</p>
-                  <h3 className="mt-1 truncate text-base font-black text-slate-950">{item.requestedBy || '-'}</h3>
-                  <p className="mt-1 truncate text-xs font-semibold text-slate-500">{item.department || '-'} / {item.jobLocation || '-'}</p>
-                </div>
-                <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-black capitalize ${statusClass}`}>
-                  {statusLabel}
-                </span>
-              </div>
-
-              {isPending && canApproveLeaves && (
-                <label className="mt-4 flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-sm font-black text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => handleCheckboxChange(item.serialNo, item)}
-                    className="h-4 w-4 rounded border-slate-300 text-navy focus:ring-navy"
-                  />
-                  Select for approval
-                </label>
-              )}
-
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <div className="rounded-2xl bg-slate-50 p-3">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">From</p>
-                  {isPending && isSelected ? (
-                    <input
-                      type="date"
-                      value={editableDates.from}
-                      onChange={(e) => handleDateChange('from', e.target.value)}
-                      className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-800 outline-none"
-                    />
-                  ) : (
-                    <p className="mt-1 text-sm font-black text-slate-800">{formatDate(item.startDate)}</p>
-                  )}
-                </div>
-                <div className="rounded-2xl bg-slate-50 p-3">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">To</p>
-                  {isPending && isSelected ? (
-                    <input
-                      type="date"
-                      value={editableDates.to}
-                      onChange={(e) => handleDateChange('to', e.target.value)}
-                      className="mt-1 h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs font-bold text-slate-800 outline-none"
-                    />
-                  ) : (
-                    <p className="mt-1 text-sm font-black text-slate-800">{formatDate(item.endDate)}</p>
-                  )}
-                </div>
-                <div className="rounded-2xl bg-indigo-50 p-3">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-indigo-400">Leaves</p>
-                  <p className="mt-1 text-sm font-black text-indigo-800">
-                    {isPending && isSelected ? calculateDays(editableDates.from, editableDates.to) : item.days || '-'}
-                  </p>
-                </div>
-                <div className="rounded-2xl bg-cyan-50 p-3">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-cyan-500">Planned</p>
-                  <p className="mt-1 text-sm font-black text-cyan-800">{formatDate(item.approvalPlanned)}</p>
-                </div>
-              </div>
-
-              <div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Reason</p>
-                <p className="mt-1 text-sm font-bold text-slate-700">{item.leaveReason || '-'}</p>
-                {item.remark && <p className="mt-2 text-xs font-semibold text-slate-500">{item.remark}</p>}
-                {item.imageUrl && (
-                  <a href={item.imageUrl} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex text-xs font-black text-indigo-600">
-                    View attachment
-                  </a>
-                )}
-              </div>
-
-              {!isPending && (
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="rounded-2xl bg-slate-50 p-3">
-                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Actual</p>
-                    <p className="mt-1 text-sm font-black text-slate-800">{formatDate(item.approvalActual)}</p>
-                  </div>
-                  <div className="rounded-2xl bg-slate-50 p-3">
-                    <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">By</p>
-                    <p className="mt-1 truncate text-sm font-black text-slate-800">{item.approvedBy || '-'}</p>
-                  </div>
-                </div>
-              )}
-
-              {isPending && canApproveLeaves && (
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => handleLeaveAction('accept')}
-                    disabled={!isSelected || loading}
-                    className={`h-11 rounded-2xl bg-emerald-600 text-sm font-black text-white shadow-lg shadow-emerald-100 transition ${!isSelected || loading ? 'cursor-not-allowed opacity-60' : 'hover:bg-emerald-700'}`}
-                  >
-                    {loading && isSelected && actionInProgress === 'accept' ? 'Accepting...' : 'Accept'}
-                  </button>
-                  <button
-                    onClick={() => handleLeaveAction('rejected')}
-                    disabled={!isSelected || loading}
-                    className={`h-11 rounded-2xl bg-rose-600 text-sm font-black text-white shadow-lg shadow-rose-100 transition ${!isSelected || loading ? 'cursor-not-allowed opacity-60' : 'hover:bg-rose-700'}`}
-                  >
-                    {loading && isSelected && actionInProgress === 'rejected' ? 'Rejecting...' : 'Reject'}
-                  </button>
-                </div>
-              )}
-            </article>
-          );
-        })}
-      </div>
+      currentUser?.name ||
+      currentUser?._displayName ||
+      currentUser?.username ||
+      currentUser?.Username ||
+      'Authorized Approver'
     );
   };
 
+  const handleLeaveAction = async (action, targetItem = null) => {
+    const itemToProcess = targetItem || selectedRow;
+    if (!itemToProcess) {
+      toast.error('Please select a leave request');
+      return;
+    }
+
+    const actionStatus = action === 'accept' ? 'Approved' : 'Rejected';
+    const approvalRemark = window.prompt(`Enter remarks for ${actionStatus}`, itemToProcess.approvalRemarks || '');
+    if (approvalRemark === null) return;
+
+    setActionInProgress(action);
+    setLoading(true);
+
+    try {
+      const finalFromDate = editableDates.from ? editableDates.from : itemToProcess.startDate;
+      const finalToDate = editableDates.to ? editableDates.to : itemToProcess.endDate;
+      const approverName = getCurrentApproverName();
+
+      const res = await updateLeaveStatus({
+        id: itemToProcess.id,
+        leaveRequestNo: itemToProcess.leaveRequestId || itemToProcess.serialNo,
+        status: actionStatus,
+        approvedBy: approverName,
+        remarks: approvalRemark,
+        fromDate: finalFromDate,
+        toDate: finalToDate,
+      });
+
+      if (res.success) {
+        toast.success(`Leave ${action === 'accept' ? 'approved' : 'rejected'} for ${itemToProcess.requestedBy || 'employee'}`);
+        
+        // Auto-Trigger WhatsApp Notification to Employee
+        if (action === 'accept') {
+          triggerLeaveApprovalNotification({
+            employeeName: itemToProcess.requestedBy || itemToProcess.employeeName || 'Employee',
+            employeePhone: itemToProcess.mobile || itemToProcess.phone || '+919876543210',
+            designation: itemToProcess.department || itemToProcess.designation || 'Staff',
+            approverName: approverName,
+            leaveType: itemToProcess.leaveReason || 'Leave',
+            fromDate: formatDateToDDMMYYYY(finalFromDate),
+            toDate: formatDateToDDMMYYYY(finalToDate),
+            days: itemToProcess.totalLeaves || itemToProcess.days || '1 Day',
+            reason: itemToProcess.leaveReason || itemToProcess.remark || 'Personal leave',
+            remarks: approvalRemark || 'Approved',
+          });
+        } else {
+          triggerLeaveRejectionNotification({
+            employeeName: itemToProcess.requestedBy || itemToProcess.employeeName || 'Employee',
+            employeePhone: itemToProcess.mobile || itemToProcess.phone || '+919876543210',
+            designation: itemToProcess.department || itemToProcess.designation || 'Staff',
+            approverName: approverName,
+            leaveType: itemToProcess.leaveReason || 'Leave',
+            fromDate: formatDateToDDMMYYYY(finalFromDate),
+            toDate: formatDateToDDMMYYYY(finalToDate),
+            days: itemToProcess.totalLeaves || itemToProcess.days || '1 Day',
+            reason: itemToProcess.leaveReason || itemToProcess.remark || 'Personal leave',
+            remarks: approvalRemark || 'Operational requirements',
+          });
+        }
+
+        setSelectedRow(null);
+        setEditableDates({ from: '', to: '' });
+        fetchLeaveData({ showLoader: false, silent: true });
+      } else {
+        throw new Error(res.error || 'Update failed');
+      }
+    } catch (error) {
+      console.error('Update error:', error);
+      toast.error(`Failed to ${action} leave: ${error.message}`);
+    } finally {
+      setLoading(false);
+      setActionInProgress(null);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+
+    try {
+      const payload = {
+        requested_by: formData.employeeName,
+        department: formData.department,
+        job_location: formData.jobLocation,
+        leave_from_date: formData.fromDate,
+        leave_to_date: formData.toDate,
+        leave_reason: formData.reason,
+        remark: formData.remark,
+        image_url: formData.imageUrl,
+        approval_status: 'Pending'
+      };
+
+      const res = await createLeaveRequest(payload);
+      if (res.success) {
+        toast.success('Leave request submitted successfully!');
+
+        // Auto-Trigger WhatsApp Alert to Manager
+        triggerLeaveRequestNotification({
+          employeeName: formData.employeeName,
+          employeeId: formData.employeeId || 'EMP',
+          designation: formData.designation || formData.department || 'Staff',
+          jobLocation: formData.jobLocation || 'Piramal Petroleum',
+          managerName: 'HR Manager',
+          leaveType: formData.reason || 'Leave Application',
+          fromDate: formatDateToDDMMYYYY(formData.fromDate),
+          toDate: formatDateToDDMMYYYY(formData.toDate),
+          days: formatLeaveDays(formData.fromDate, formData.toDate),
+          reason: formData.reason || 'Personal work',
+          remark: formData.remark || 'Submitted for approval',
+          lrNo: res.data?.leave_request_no || `LR-${Date.now().toString().slice(-5)}`,
+          approvalLink: `${window.location.origin}/leave-management`,
+        });
+
+        setFormData({
+          employeeId: '',
+          employeeName: '',
+          designation: '',
+          department: '',
+          jobLocation: '',
+          fromDate: '',
+          toDate: '',
+          reason: '',
+          remark: '',
+          imageUrl: ''
+        });
+        setShowModal(false);
+        fetchLeaveData({ showLoader: false, silent: true });
+      } else {
+        toast.error('Failed to submit: ' + (res.error || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Submit error:', err);
+      toast.error('Something went wrong!');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    switch ((status || '').toLowerCase()) {
+      case 'approved':
+        return {
+          pill: 'bg-emerald-500/10 text-emerald-700 border-emerald-200/80',
+          dot: 'bg-emerald-500',
+          icon: <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+        };
+      case 'rejected':
+        return {
+          pill: 'bg-rose-500/10 text-rose-700 border-rose-200/80',
+          dot: 'bg-rose-500',
+          icon: <AlertCircle size={12} className="text-rose-600 shrink-0" />
+        };
+      default:
+        return {
+          pill: 'bg-amber-500/10 text-amber-700 border-amber-200/80',
+          dot: 'bg-amber-500',
+          icon: <Clock size={12} className="text-amber-600 shrink-0" />
+        };
+    }
+  };
+
+  const statusTabs = [
+    { label: 'Pending Leaves', value: 'pending', count: scopedPendingLeaves.length, dot: 'bg-amber-500' },
+    { label: 'Approved Leaves', value: 'approved', count: scopedApprovedLeaves.length, dot: 'bg-emerald-500' },
+    { label: 'Rejected Leaves', value: 'rejected', count: scopedRejectedLeaves.length, dot: 'bg-rose-500' },
+  ];
+
   return (
-    <div className="space-y-4 px-4 pb-6 sm:space-y-6 sm:px-0 sm:pb-0">
-      <div className="rounded-[28px] border border-slate-200/80 bg-white/95 p-4 shadow-[0_18px_38px_rgba(15,23,42,0.08)] sm:flex sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none">
-        <div className="mb-3 flex flex-wrap items-center gap-3 sm:mb-0">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400 sm:hidden">Employee Leave</p>
-            <h1 className="text-2xl font-black text-slate-950 sm:text-2xl">Leave Management</h1>
-          </div>
-          <span className="text-xs font-normal bg-green-100 text-green-700 px-2 py-0.5 rounded border border-green-200">v1.1 (Sync Fixed)</span>
-        </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="hidden inline-flex h-12 w-full items-center justify-center rounded-2xl border border-transparent bg-navy px-4 text-sm font-black text-white shadow-[0_14px_30px_rgba(49,46,129,0.18)] hover:bg-navy-dark sm:h-auto sm:w-auto sm:rounded-md sm:py-2 sm:font-medium sm:shadow-sm"
-        >
-          <Plus size={16} className="mr-2" />
-          New Leave Request
-        </button>
-      </div>
-
-      <div className="rounded-[26px] border border-slate-200 bg-white/95 p-3 shadow-[0_14px_30px_rgba(15,23,42,0.06)] sm:rounded-lg sm:bg-white sm:p-4 sm:shadow">
-        <div className="flex flex-1 sm:max-w-md">
-          <div className="relative w-full">
-            <input
-              type="text"
-              placeholder="Search by name or employee ID..."
-              className="h-12 w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 sm:h-auto sm:rounded-lg sm:border-gray-300 sm:py-2 sm:font-normal sm:text-gray-500"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            <Search size={20} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500" />
-          </div>
-        </div>
-      </div>
-
-      <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_42px_rgba(15,23,42,0.08)] sm:rounded-lg sm:border-0 sm:shadow">
-        <div className="border-b border-gray-200">
-          <nav className="-mb-px flex w-full overflow-x-auto px-1 sm:w-auto sm:px-0">
-            <button
-              onClick={() => setActiveTab('pending')}
-              className={`min-w-[110px] flex-1 whitespace-nowrap py-3 px-3 text-center border-b-2 text-xs font-black sm:min-w-0 sm:flex-none sm:py-4 sm:px-6 sm:text-sm sm:font-medium ${activeTab === 'pending'
-                ? 'border-indigo-500 text-navy'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-            >
-              <span className="sm:hidden">Pending ({scopedPendingLeaves.length})</span>
-              <span className="hidden sm:inline">Pending Leaves ({scopedPendingLeaves.length})</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('approved')}
-              className={`min-w-[110px] flex-1 whitespace-nowrap py-3 px-3 text-center border-b-2 text-xs font-black sm:min-w-0 sm:flex-none sm:py-4 sm:px-6 sm:text-sm sm:font-medium ${activeTab === 'approved'
-                ? 'border-indigo-500 text-navy'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-            >
-              <span className="sm:hidden">Approved ({scopedApprovedLeaves.length})</span>
-              <span className="hidden sm:inline">Approved Leaves ({scopedApprovedLeaves.length})</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('rejected')}
-              className={`min-w-[110px] flex-1 whitespace-nowrap py-3 px-3 text-center border-b-2 text-xs font-black sm:min-w-0 sm:flex-none sm:py-4 sm:px-6 sm:text-sm sm:font-medium ${activeTab === 'rejected'
-                ? 'border-indigo-500 text-navy'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-            >
-              <span className="sm:hidden">Rejected ({scopedRejectedLeaves.length})</span>
-              <span className="hidden sm:inline">Rejected Leaves ({scopedRejectedLeaves.length})</span>
-            </button>
-          </nav>
-        </div>
-
-        <div className="p-3 sm:p-6">
-          <div>
-            {tableLoading ? (
-              <div className="px-6 py-12 text-center">
-                <div className="flex justify-center flex-col items-center">
-                  <div className="w-6 h-6 border-4 border-indigo-500 border-dashed rounded-full animate-spin mb-2"></div>
-                  <span className="text-gray-600 text-sm">
-                    {loading ? 'Processing request...' : 'Loading leave data...'}
-                  </span>
-                </div>
+    <div className="p-3 sm:p-5 space-y-3 bg-[#f8fafc] min-h-screen text-xs antialiased text-slate-800">
+      
+      {/* Top Header Card */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        
+        {/* Top Action Bar */}
+        <div className="px-4 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-gradient-to-r from-slate-50/70 via-white to-slate-50/40">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white shadow-xs shadow-indigo-500/20">
+              <Layers size={18} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold text-slate-900 tracking-tight">Leave Management</h1>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/80 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>
+                  {scopedPendingLeaves.length} Pending Actions
+                </span>
               </div>
-            ) : error ? (
-              <div className="px-6 py-12 text-center">
-                <p className="text-red-500">Error: {error}</p>
+              <p className="text-[11px] text-slate-500">Employee leave requests, review & 1-click approvals</p>
+            </div>
+          </div>
+
+          {/* Action Buttons & View Mode Toggle */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* View Mode Switcher */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/80">
+              <button
+                onClick={() => setViewMode("table")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === "table" ? "bg-white text-slate-900 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Table List View"
+              >
+                <LayoutList size={13} />
+                <span>Table</span>
+              </button>
+              <button
+                onClick={() => setViewMode("grid")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  viewMode === "grid" ? "bg-white text-slate-900 shadow-2xs font-bold" : "text-slate-500 hover:text-slate-800"
+                }`}
+                title="Card Grid View"
+              >
+                <LayoutGrid size={13} />
+                <span>Cards</span>
+              </button>
+            </div>
+
+            {/* Sync Button */}
+            <button
+              onClick={() => fetchLeaveData()}
+              disabled={tableLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 rounded-xl text-xs font-semibold transition-all shadow-2xs active:scale-95 disabled:opacity-60 cursor-pointer"
+            >
+              <RefreshCw size={12} className={tableLoading ? "animate-spin text-indigo-600" : "text-slate-500"} />
+              <span>{tableLoading ? "Syncing..." : "Sync"}</span>
+            </button>
+
+            {/* Apply Leave Button */}
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 active:scale-95 text-white rounded-xl text-xs font-semibold transition-all shadow-xs shadow-indigo-600/20 cursor-pointer"
+            >
+              <Plus size={14} />
+              <span>Apply Leave Request</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Segmented Status Tabs (Linear / SaaS Style) */}
+        <div className="px-4 py-2 border-b border-slate-100 bg-slate-50/50 flex items-center gap-1.5 overflow-x-auto">
+          {statusTabs.map((tab) => {
+            const isActive = activeTab === tab.value;
+            return (
+              <button
+                key={tab.value}
+                onClick={() => {
+                  setActiveTab(tab.value);
+                  setSelectedRow(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-medium transition-all whitespace-nowrap cursor-pointer border ${
+                  isActive
+                    ? "bg-white text-slate-900 border-slate-300 shadow-2xs font-bold ring-1 ring-slate-900/5"
+                    : "bg-transparent border-transparent text-slate-600 hover:bg-slate-200/50 hover:text-slate-900"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${tab.dot}`}></span>
+                <span>{tab.label}</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isActive ? "bg-slate-100 text-slate-800 font-bold" : "bg-slate-200/60 text-slate-600"}`}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Filter Bar */}
+        <div className="p-3 bg-white border-b border-slate-100">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+            
+            {/* Search Input */}
+            <div className="relative w-full sm:max-w-md">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search by employee name, LR number, reason..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-8 pr-7 py-1.5 bg-slate-50/80 hover:bg-white focus:bg-white border border-slate-200/90 rounded-xl text-xs text-slate-800 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all outline-none"
+              />
+              {searchTerm && (
                 <button
-                  onClick={() => fetchLeaveData()}
-                  className="mt-2 px-4 py-2 bg-navy text-white rounded-md hover:bg-navy-dark"
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 >
-                  Retry
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            {/* Selection Action Toolbar (Approve / Reject Selected) */}
+            {selectedRow && activeTab === 'pending' && !shouldShowOnlyOwnLeaves ? (
+              <div className="flex items-center gap-2 bg-indigo-50/80 border border-indigo-200/80 px-3 py-1.5 rounded-xl">
+                <span className="text-[11px] font-bold text-indigo-900">
+                  Selected: <span className="font-mono">{selectedRow.leaveRequestId || selectedRow.serialNo}</span>
+                </span>
+                <button
+                  onClick={() => handleLeaveAction('accept')}
+                  disabled={loading}
+                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                >
+                  <Check size={12} />
+                  <span>Approve</span>
+                </button>
+                <button
+                  onClick={() => handleLeaveAction('rejected')}
+                  disabled={loading}
+                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition shadow-xs flex items-center gap-1 cursor-pointer"
+                >
+                  <X size={12} />
+                  <span>Reject</span>
+                </button>
+                <button
+                  onClick={() => setSelectedRow(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1"
+                  title="Clear Selection"
+                >
+                  <X size={13} />
                 </button>
               </div>
             ) : (
-              <>
-                {renderLeaveMobileCards()}
-                <div className="hidden overflow-x-auto md:block">
-                  {renderTable()}
-                </div>
-                {activeFilteredCount > 0 && (
-                  <div className="flex flex-col gap-3 border-t border-gray-100 px-2 py-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-gray-500">
-                      Showing {activeVisibleCount} of {activeFilteredCount} records
-                    </p>
-                    {activeVisibleCount < activeFilteredCount && (
-                      <button
-                        type="button"
-                        onClick={() => setVisibleLimit((limit) => limit + LEAVE_PAGE_SIZE)}
-                        className="inline-flex items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                      >
-                        Load more
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
+              <div className="text-[11px] text-slate-500">
+                Viewing <span className="font-bold text-slate-800 font-mono">{currentFilteredTotal}</span> requests
+              </div>
             )}
           </div>
         </div>
+
+        {/* VIEW 1: MODERN SAAS DATA TABLE */}
+        {viewMode === "table" ? (
+          <div className="overflow-x-auto max-h-[calc(100vh-310px)] overflow-y-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="bg-slate-50/90 text-slate-500 sticky top-0 z-20 border-b border-slate-200/80 backdrop-blur-xs">
+                <tr className="text-[11px] font-semibold uppercase tracking-wider">
+                  {!shouldShowOnlyOwnLeaves && activeTab === 'pending' && (
+                    <th className="py-3 px-4 w-10 text-center">Select</th>
+                  )}
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[190px]">Employee / Requester</th>
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[100px]">LR Number</th>
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[180px]">Leave Duration</th>
+                  <th className="py-3 px-4 min-w-[160px]">Reason & Remarks</th>
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[100px]">Status</th>
+                  {activeTab !== 'pending' && (
+                    <th className="py-3 px-4 whitespace-nowrap min-w-[130px]">Approved By</th>
+                  )}
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[80px]">Doc</th>
+                  {!shouldShowOnlyOwnLeaves && activeTab === 'pending' && (
+                    <th className="py-3 px-4 whitespace-nowrap min-w-[140px] text-right">Actions</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white font-normal">
+                {tableLoading ? (
+                  <tr>
+                    <td colSpan="9" className="px-6 py-16 text-center text-slate-500">
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-7 h-7 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                        <p className="font-semibold text-xs text-slate-600">Loading leave records...</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : currentDisplayList.length === 0 ? (
+                  <tr>
+                    <td colSpan="9" className="px-6 py-14 text-center text-slate-400">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                          <AlertCircle size={20} />
+                        </div>
+                        <p className="font-bold text-sm text-slate-700">No {activeTab} leave requests found</p>
+                        <p className="text-xs text-slate-400">Try searching another employee or clearing filters</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  currentDisplayList.map((item, idx) => {
+                    const badge = getStatusBadge(item.approvalStatus || item.status);
+                    const gradient = getAvatarGradient(item.requestedBy || item.employeeName);
+                    const initials = getInitials(item.requestedBy || item.employeeName);
+                    const isSelected = selectedRow?.id === item.id || selectedRow?.serialNo === item.serialNo;
+
+                    return (
+                      <tr 
+                        key={item.id || item.serialNo || idx} 
+                        className={`hover:bg-slate-50/70 transition-colors group ${isSelected ? 'bg-indigo-50/40' : ''}`}
+                      >
+                        {/* Checkbox */}
+                        {!shouldShowOnlyOwnLeaves && activeTab === 'pending' && (
+                          <td className="py-2.5 px-4 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {
+                                if (isSelected) {
+                                  setSelectedRow(null);
+                                  setEditableDates({ from: '', to: '' });
+                                } else {
+                                  setSelectedRow(item);
+                                  setEditableDates({ from: item.startDate || '', to: item.endDate || '' });
+                                }
+                              }}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer"
+                            />
+                          </td>
+                        )}
+
+                        {/* Employee Name & Dept */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${gradient} flex items-center justify-center text-white font-bold text-[11px] shadow-2xs shrink-0`}>
+                              {initials}
+                            </div>
+                            <div>
+                              <span className="font-bold text-slate-900 text-xs hover:text-indigo-700 transition-colors block">
+                                {item.requestedBy || item.employeeName || "Unnamed Employee"}
+                              </span>
+                              <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-0.5">
+                                <Building2 size={10} className="text-slate-400" />
+                                <span>{item.department || "General"}</span>
+                                {item.jobLocation && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{item.jobLocation}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* LR Number */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <span className="font-mono text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 rounded-md">
+                            {item.leaveRequestId || item.serialNo || "-"}
+                          </span>
+                        </td>
+
+                        {/* Leave Duration */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <div>
+                            <div className="flex items-center gap-1.5 text-xs font-medium text-slate-800">
+                              <Calendar size={11} className="text-slate-400" />
+                              <span>{formatDateToDDMMYYYY(item.startDate)}</span>
+                              <ArrowRight size={10} className="text-slate-400" />
+                              <span>{formatDateToDDMMYYYY(item.endDate)}</span>
+                            </div>
+                            <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.2 bg-slate-100 text-slate-700 rounded-md border border-slate-200">
+                              {item.days || item.totalLeaves || "1 day"}
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* Reason & Remarks */}
+                        <td className="py-2.5 px-4">
+                          <div className="max-w-[200px]">
+                            <p className="text-[11px] text-slate-800 font-medium truncate" title={item.leaveReason}>
+                              {item.leaveReason || "-"}
+                            </p>
+                            {item.remark && (
+                              <p className="text-[10px] text-slate-500 truncate mt-0.5" title={item.remark}>
+                                Remark: {item.remark}
+                              </p>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Status */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold ${badge.pill}`}>
+                            {badge.icon}
+                            <span>{item.approvalStatus || item.status || "Pending"}</span>
+                          </span>
+                        </td>
+
+                        {/* Approved By (if approved/rejected) */}
+                        {activeTab !== 'pending' && (
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <div>
+                              <span className="font-medium text-slate-800 text-xs block">{item.approvedBy || "-"}</span>
+                              {item.approvalRemarks && (
+                                <span className="text-[10px] text-slate-500 block max-w-[120px] truncate" title={item.approvalRemarks}>
+                                  {item.approvalRemarks}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        )}
+
+                        {/* Document */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          {item.imageUrl ? (
+                            <a
+                              href={item.imageUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-md text-[11px] font-semibold transition-colors"
+                            >
+                              <FileText size={11} />
+                              <span>View</span>
+                            </a>
+                          ) : (
+                            <span className="text-slate-300 text-[11px]">-</span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        {!shouldShowOnlyOwnLeaves && activeTab === 'pending' && (
+                          <td className="py-2.5 px-4 whitespace-nowrap text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => handleLeaveAction('accept', item)}
+                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                                title="Quick Approve"
+                              >
+                                <Check size={12} />
+                                <span>Approve</span>
+                              </button>
+                              <button
+                                onClick={() => handleLeaveAction('rejected', item)}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                                title="Quick Reject"
+                              >
+                                <X size={12} />
+                                <span>Reject</span>
+                              </button>
+                              <button
+                                title="Share 1-Click Approval Link on WhatsApp"
+                                onClick={() => {
+                                  const shareUrl = `${window.location.origin}/quick-leave?lr=${item.leaveRequestId || item.serialNo}&id=${item.id}`;
+                                  const text = `*Leave Request Approval Needed*\n\n` +
+                                    `*LR No:* ${item.leaveRequestId || item.serialNo}\n` +
+                                    `*Employee:* ${item.requestedBy || item.employeeName}\n` +
+                                    `*Dates:* ${formatDateToDDMMYYYY(item.startDate)} to ${formatDateToDDMMYYYY(item.endDate)} (${item.days || item.totalLeaves})\n` +
+                                    `*Reason:* ${item.leaveReason || '-'}\n\n` +
+                                    `👉 *Click to Approve / Reject in 1-Click:* ${shareUrl}`;
+                                  window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+                                }}
+                                className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg border border-emerald-200 transition"
+                              >
+                                <Share2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          /* VIEW 2: MODERN SAAS CANDIDATE CARDS GRID */
+          <div className="p-4 overflow-y-auto max-h-[calc(100vh-310px)]">
+            {tableLoading ? (
+              <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                <div className="w-7 h-7 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+                <p className="font-semibold text-xs text-slate-600">Loading leave cards...</p>
+              </div>
+            ) : currentDisplayList.length === 0 ? (
+              <div className="py-14 text-center text-slate-400 flex flex-col items-center justify-center gap-2">
+                <AlertCircle size={24} />
+                <p className="font-bold text-sm text-slate-700">No {activeTab} leave requests</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                {currentDisplayList.map((item, idx) => {
+                  const badge = getStatusBadge(item.approvalStatus || item.status);
+                  const gradient = getAvatarGradient(item.requestedBy || item.employeeName);
+                  const initials = getInitials(item.requestedBy || item.employeeName);
+
+                  return (
+                    <div 
+                      key={item.id || item.serialNo || idx} 
+                      className="bg-white rounded-xl border border-slate-200/90 hover:border-indigo-300 hover:shadow-sm transition-all p-3.5 flex flex-col justify-between space-y-3"
+                    >
+                      {/* Card Top */}
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-9 h-9 rounded-xl bg-gradient-to-tr ${gradient} flex items-center justify-center text-white font-bold text-xs shadow-2xs shrink-0`}>
+                              {initials}
+                            </div>
+                            <div>
+                              <h3 className="font-bold text-slate-900 text-xs">
+                                {item.requestedBy || item.employeeName || "Unnamed"}
+                              </h3>
+                              <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                                <span>{item.department || "General"}</span>
+                                {item.jobLocation && <span>• {item.jobLocation}</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                            {item.leaveRequestId || item.serialNo || "-"}
+                          </span>
+                        </div>
+
+                        {/* Dates & Reason */}
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-1.5">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-slate-500">Leave Period:</span>
+                            <span className="font-bold text-slate-800">
+                              {formatDateToDDMMYYYY(item.startDate)} → {formatDateToDDMMYYYY(item.endDate)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-slate-500">Duration:</span>
+                            <span className="font-bold text-indigo-700">{item.days || item.totalLeaves || "1 day"}</span>
+                          </div>
+                          <div className="text-xs pt-1">
+                            <span className="text-slate-500 block mb-0.5">Reason:</span>
+                            <p className="text-slate-800 bg-slate-50 p-2 rounded-lg text-[11px] line-clamp-2">
+                              {item.leaveReason || "No reason specified"}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Footer: Status & Actions */}
+                      <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold ${badge.pill}`}>
+                          {badge.icon}
+                          <span>{item.approvalStatus || item.status || "Pending"}</span>
+                        </span>
+
+                        {!shouldShowOnlyOwnLeaves && activeTab === 'pending' && (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleLeaveAction('accept', item)}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1"
+                            >
+                              <Check size={11} /> Approve
+                            </button>
+                            <button
+                              onClick={() => handleLeaveAction('rejected', item)}
+                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1"
+                            >
+                              <X size={11} /> Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Bottom Pagination */}
+        {currentFilteredTotal > 0 && (
+          <div className="px-4 py-2.5 bg-slate-50/80 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-2">
+            <p className="text-[11px] text-slate-500 font-medium">
+              Showing <span className="text-slate-900 font-bold">{Math.min(visibleLimit, currentFilteredTotal)}</span> of{" "}
+              <span className="text-slate-900 font-bold">{currentFilteredTotal}</span> {activeTab} requests
+            </p>
+
+            {visibleLimit < currentFilteredTotal && (
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((limit) => limit + LEAVE_PAGE_SIZE)}
+                className="px-3 py-1 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors shadow-2xs cursor-pointer"
+              >
+                Load More Records
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Modal for new leave request */}
+      {/* Apply New Leave Request Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 sm:items-start sm:pt-10 sm:pb-28 overflow-y-auto">
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-md max-h-[85vh] overflow-y-auto">
-            <div className="flex justify-between items-center p-6 border-b sticky top-0 bg-white z-10">
-              <h3 className="text-lg font-medium">New Leave Request</h3>
-              <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-gray-700">
-                <X size={20} />
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto border border-slate-200">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 sticky top-0 bg-white z-10">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center">
+                  <Calendar size={14} />
+                </div>
+                <h2 className="text-sm font-bold text-slate-900">Apply Leave Request</h2>
+              </div>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100"
+              >
+                <X size={16} />
               </button>
             </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Timestamp</label>
-                  <input
-                    type="text"
-                    value="Auto generated"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-gray-100 focus:outline-none"
-                    readOnly
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">LR-Unique No.</label>
-                  <input
-                    type="text"
-                    value="Auto generated"
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 bg-gray-100 focus:outline-none"
-                    readOnly
-                  />
-                </div>
-              </div>
-
+            <form onSubmit={handleSubmit} className="p-5 space-y-3.5">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Requested By *</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Employee Name *</label>
                 <select
                   name="employeeName"
                   value={formData.employeeName}
                   onChange={handleInputChange}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
+                  className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
                   required
                   disabled={employeesLoading}
                 >
@@ -1430,133 +1100,114 @@ const LeaveManagement = () => {
                     {employeesLoading ? 'Loading employees...' : 'Select Employee'}
                   </option>
                   {employees.map(employee => (
-                    <option key={employee.id} value={employee.name}>{employee.name}</option>
+                    <option key={employee.id} value={employee.name}>{employee.name} ({employee.code || 'No Code'})</option>
                   ))}
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Departments *</label>
-                <input
-                  type="text"
-                  name="department"
-                  value={formData.department}
-                  onChange={handleInputChange}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Job location *</label>
-                <input
-                  type="text"
-                  name="jobLocation"
-                  value={formData.jobLocation}
-                  onChange={handleInputChange}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Date of leave FROM *</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Department *</label>
+                  <input
+                    type="text"
+                    name="department"
+                    value={formData.department}
+                    onChange={handleInputChange}
+                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                    placeholder="Department..."
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Job Location *</label>
+                  <input
+                    type="text"
+                    name="jobLocation"
+                    value={formData.jobLocation}
+                    onChange={handleInputChange}
+                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                    placeholder="Location / Plant..."
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Leave From Date *</label>
                   <input
                     type="date"
                     name="fromDate"
                     value={formData.fromDate}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
                     required
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">TO *</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Leave To Date *</label>
                   <input
                     type="date"
                     name="toDate"
                     value={formData.toDate}
                     onChange={handleInputChange}
-                    className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
+                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
                     required
                   />
                 </div>
               </div>
 
               {formData.fromDate && formData.toDate && (
-                <div className="bg-blue-50 p-3 rounded-lg">
-                  <p className="text-sm text-blue-800">
-                    Total No of leaves days: <span className="font-semibold">{formatLeaveDays(formData.fromDate, formData.toDate)}</span>
+                <div className="bg-indigo-50/80 border border-indigo-100 p-2.5 rounded-xl">
+                  <p className="text-xs text-indigo-900 font-semibold flex items-center justify-between">
+                    <span>Total Calculated Leave Duration:</span>
+                    <span className="font-bold text-indigo-700 font-mono bg-white px-2 py-0.5 rounded border border-indigo-200">
+                      {formatLeaveDays(formData.fromDate, formData.toDate)}
+                    </span>
                   </p>
                 </div>
               )}
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Reason for Taking Leave *</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Reason for Taking Leave *</label>
                 <textarea
                   name="reason"
                   value={formData.reason}
                   onChange={handleInputChange}
                   rows={3}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  placeholder="Please provide reason for leave..."
+                  className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                  placeholder="State the reason for leave request..."
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Remark</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Remarks (Optional)</label>
                 <textarea
                   name="remark"
                   value={formData.remark}
                   onChange={handleInputChange}
                   rows={2}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  placeholder="Enter remark..."
+                  className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                  placeholder="Any additional notes..."
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Image</label>
-                <input
-                  type="url"
-                  name="imageUrl"
-                  value={formData.imageUrl}
-                  onChange={handleInputChange}
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  placeholder="Paste image URL..."
-                />
-              </div>
-
-              <div className="flex justify-end space-x-2 pt-4">
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-1.5 border border-slate-200 rounded-xl text-slate-700 hover:bg-slate-50 text-xs font-semibold cursor-pointer"
+                  disabled={submitting}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className={`px-4 py-2 text-white bg-navy rounded-md hover:bg-navy-dark min-h-[42px] flex items-center justify-center ${submitting ? 'opacity-75 cursor-not-allowed' : ''
-                    }`}
+                  className="px-5 py-1.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 text-xs font-bold shadow-xs disabled:opacity-60 cursor-pointer"
                   disabled={submitting}
                 >
-                  {submitting ? (
-                    <div className="flex items-center">
-                      <svg
-                        className="animate-spin h-4 w-4 text-white mr-2"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      <span>Submitting...</span>
-                    </div>
-                  ) : 'Submit Request'}
+                  {submitting ? "Submitting..." : "Submit Leave Request"}
                 </button>
               </div>
             </form>
@@ -1568,4 +1219,3 @@ const LeaveManagement = () => {
 };
 
 export default LeaveManagement;
-

@@ -1,31 +1,329 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Search, Download, X, Filter, User, ChevronDown, CalendarDays, Table2, ChevronLeft, ChevronRight, MoreVertical, CheckCircle2, XCircle, Clock, Coffee, AlertCircle, TrendingUp, MapPin, ExternalLink } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, Download, X, Filter, User, ChevronDown, CalendarDays, Table2, ChevronLeft, ChevronRight, MoreVertical, CheckCircle2, XCircle, Clock, Coffee, AlertCircle, TrendingUp, MapPin, ExternalLink, Check } from 'lucide-react';
 import XLSX from 'xlsx-js-style';
+import { supabase } from '../services/supabaseClient';
 
-const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
-const OUTSTATION_SPREADSHEET_ID = '1WTT8ZQhtf1yeSChNn2uJeW5Tz2TvYjQLrxhTx5l4Fgw';
-const LEAVE_API_URL = import.meta.env.VITE_LEAVE_REQUEST_SHEET_URL;
-const LEAVING_API_URL = import.meta.env.VITE_LEAVING_SHEET_URL;
-const LEAVE_SHEET_NAME = 'FMS';
-const LEAVE_DATA_START_INDEX = 6;
+// ==========================================
+// ENHANCED SEARCHABLE SINGLE-SELECT DROPDOWN
+// ==========================================
+const SearchableSelect = ({
+  icon: Icon,
+  value,
+  onChange,
+  options = [],
+  allLabel = 'All',
+  placeholder = 'Search...',
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef(null);
 
-const parseGoogleSheetTable = (text, sheetLabel = "sheet") => {
-  const jsonStart = text.indexOf("{");
-  const jsonEnd = text.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) {
-    throw new Error(`Invalid ${sheetLabel} response`);
-  }
-  const payload = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-  if (payload.status && payload.status !== "ok") {
-    throw new Error(payload.errors?.[0]?.detailed_message || `Failed to read ${sheetLabel}`);
-  }
-  return (payload.table?.rows || []).map((row) =>
-    (row.c || []).map((cell) => {
-      if (!cell) return "";
-      return cell.f ?? cell.v ?? "";
-    })
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredOptions = useMemo(() => {
+    if (!query.trim()) return options;
+    const q = query.toLowerCase();
+    return options.filter((opt) => String(opt).toLowerCase().includes(q));
+  }, [options, query]);
+
+  return (
+    <div className={`relative ${open ? 'z-50' : 'z-10'}`} ref={ref}>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((o) => !o);
+          setQuery('');
+        }}
+        className={`h-10 w-full rounded-lg border text-left text-sm font-semibold transition flex items-center justify-between pl-10 pr-3 outline-none cursor-pointer ${
+          value
+            ? 'border-teal-500 bg-teal-50/40 text-teal-950 font-bold shadow-xs hover:border-teal-600 focus:ring-2 focus:ring-teal-100'
+            : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100'
+        }`}
+      >
+        {Icon && (
+          <Icon
+            size={17}
+            className={`absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
+              value ? 'text-teal-600' : 'text-slate-400'
+            }`}
+          />
+        )}
+        <span className="block truncate pr-2">{value || allLabel}</span>
+        <div className="flex items-center gap-1 shrink-0">
+          {value && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange('');
+                setOpen(false);
+              }}
+              className="p-1 rounded-md hover:bg-teal-200/60 text-slate-400 hover:text-teal-800 transition cursor-pointer"
+              title="Clear"
+            >
+              <X size={14} />
+            </span>
+          )}
+          <ChevronDown
+            size={16}
+            className={`text-slate-400 transition-transform duration-200 pointer-events-none ${
+              open ? 'rotate-180 text-teal-600' : ''
+            }`}
+          />
+        </div>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 z-50 mt-1 max-h-64 w-full min-w-[220px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl animate-fadeIn">
+          {options.length > 5 && (
+            <div className="p-2 border-b border-slate-100 bg-slate-50/70">
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={placeholder}
+                  className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-7 py-1.5 text-xs font-semibold text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+                  autoFocus
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-52 overflow-y-auto p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                onChange('');
+                setOpen(false);
+              }}
+              className={`flex w-full items-center justify-between px-3 py-2 rounded-lg font-semibold transition cursor-pointer ${
+                !value
+                  ? 'bg-teal-50 text-teal-800 font-bold'
+                  : 'text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <span>{allLabel}</span>
+              {!value && <Check size={14} className="text-teal-600" />}
+            </button>
+
+            {filteredOptions.length === 0 ? (
+              <div className="py-4 text-center text-slate-400 text-xs">No matching options</div>
+            ) : (
+              filteredOptions.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => {
+                    onChange(opt);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-2 rounded-lg font-semibold transition cursor-pointer ${
+                    value === opt
+                      ? 'bg-teal-50 text-teal-800 font-bold'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className="truncate text-left">{opt}</span>
+                  {value === opt && <Check size={14} className="text-teal-600 shrink-0 ml-2" />}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
+
+// ==========================================
+// ENHANCED MULTI-SELECT FILTER DROPDOWN
+// ==========================================
+const MultiSelectDropdown = ({
+  icon: Icon,
+  selected = [],
+  onChange,
+  options = [],
+  allLabel = 'All',
+  renderLabel,
+  placeholder = 'Search...',
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setQuery('');
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredOptions = useMemo(() => {
+    if (!query.trim()) return options;
+    const q = query.toLowerCase();
+    return options.filter((opt) => {
+      const display = renderLabel ? renderLabel(opt) : String(opt);
+      return String(display).toLowerCase().includes(q) || String(opt).toLowerCase().includes(q);
+    });
+  }, [options, query, renderLabel]);
+
+  const hasSelection = selected.length > 0;
+
+  return (
+    <div className={`relative ${open ? 'z-50' : 'z-10'}`} ref={ref}>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((o) => !o);
+          setQuery('');
+        }}
+        className={`h-10 w-full rounded-lg border text-left text-sm font-semibold transition flex items-center justify-between pl-10 pr-3 outline-none cursor-pointer ${
+          hasSelection
+            ? 'border-teal-500 bg-teal-50/40 text-teal-950 font-bold shadow-xs hover:border-teal-600 focus:ring-2 focus:ring-teal-100'
+            : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100'
+        }`}
+      >
+        {Icon && (
+          <Icon
+            size={17}
+            className={`absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
+              hasSelection ? 'text-teal-600' : 'text-slate-400'
+            }`}
+          />
+        )}
+        <span className="block truncate pr-2">
+          {!hasSelection ? allLabel : `${selected.length} selected`}
+        </span>
+        <div className="flex items-center gap-1 shrink-0">
+          {hasSelection && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange([]);
+              }}
+              className="p-1 rounded-md hover:bg-teal-200/60 text-slate-400 hover:text-teal-800 transition cursor-pointer"
+              title="Clear all"
+            >
+              <X size={14} />
+            </span>
+          )}
+          <ChevronDown
+            size={16}
+            className={`text-slate-400 transition-transform duration-200 pointer-events-none ${
+              open ? 'rotate-180 text-teal-600' : ''
+            }`}
+          />
+        </div>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 z-50 mt-1 max-h-72 w-full min-w-[240px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl animate-fadeIn">
+          {options.length > 4 && (
+            <div className="p-2 border-b border-slate-100 bg-slate-50/70">
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={placeholder}
+                  className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-7 py-1.5 text-xs font-semibold text-slate-800 placeholder-slate-400 outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+                  autoFocus
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-56 overflow-y-auto p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              className={`flex w-full items-center gap-2 px-3 py-2 rounded-lg font-semibold transition cursor-pointer ${
+                !hasSelection
+                  ? 'bg-teal-50 text-teal-800 font-bold'
+                  : 'text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="checkbox"
+                readOnly
+                checked={!hasSelection}
+                className="h-4 w-4 rounded border-slate-300 text-teal-600 accent-teal-600"
+              />
+              <span>{allLabel}</span>
+            </button>
+
+            {filteredOptions.length === 0 ? (
+              <div className="py-4 text-center text-slate-400 text-xs">No matching options</div>
+            ) : (
+              filteredOptions.map((opt) => {
+                const checked = selected.includes(opt);
+                return (
+                  <label
+                    key={opt}
+                    className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 rounded-lg text-slate-700 hover:bg-slate-50 font-semibold transition"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        onChange(
+                          checked ? selected.filter((x) => x !== opt) : [...selected, opt]
+                        )
+                      }
+                      className="h-4 w-4 rounded border-slate-300 text-teal-600 accent-teal-600"
+                    />
+                    <div className="min-w-0 flex-1">
+                      {renderLabel ? renderLabel(opt) : <span className="block truncate">{opt}</span>}
+                    </div>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 
 const OutstationAttendance = () => {
   const currentMonthName = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][new Date().getMonth()];
@@ -34,11 +332,7 @@ const OutstationAttendance = () => {
   const [monthFilter, setMonthFilter] = useState(currentMonthName);
   const [yearFilter, setYearFilter] = useState(String(new Date().getFullYear()));
   const [latLngFilter, setLatLngFilter] = useState([]);
-  const [latLngOpen, setLatLngOpen] = useState(false);
-  const latLngRef = useRef(null);
   const [categoryFilter, setCategoryFilter] = useState([]);
-  const [categoryOpen, setCategoryOpen] = useState(false);
-  const categoryRef = useRef(null);
   const [attendanceView, setAttendanceView] = useState('calendar');
   const [logDateFilter, setLogDateFilter] = useState(new Date().toISOString().split('T')[0]);
   const [selectedCalendarDay, setSelectedCalendarDay] = useState(null);
@@ -54,15 +348,6 @@ const OutstationAttendance = () => {
   const [exitedEmployees, setExitedEmployees] = useState({});
 
   useEffect(() => { window.scrollTo(0, 0); }, []);
-
-  useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (latLngRef.current && !latLngRef.current.contains(e.target)) setLatLngOpen(false);
-      if (categoryRef.current && !categoryRef.current.contains(e.target)) setCategoryOpen(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   const monthOrder = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -132,12 +417,12 @@ const OutstationAttendance = () => {
 
   const normalizeLeaveRows = (rows = []) =>
     rows
-      .slice(LEAVE_DATA_START_INDEX)
       .map((row) => ({
-        employeeName: (row[2] || '').toString().trim(),
-        dateKeys: getLeaveDateKeys(row[6], row[7]),
+        employeeName: (row.requested_by || row[2] || '').toString().trim(),
+        dateKeys: getLeaveDateKeys(row.leave_from_date || row[6], row.leave_to_date || row[7]),
       }))
       .filter((leave) => leave.employeeName && leave.dateKeys.length > 0);
+
 
   const parseTimeToMinutes = (value) => {
     if (!value) return null;
@@ -211,108 +496,93 @@ const OutstationAttendance = () => {
     try {
       const fetchRawAttendance = async () => {
         try {
-          // Direct fast gviz fetch for Attendance sheet (real-time & instant)
-          const gvizUrl = `https://docs.google.com/spreadsheets/d/${OUTSTATION_SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=Attendance&cb=${Date.now()}`;
-          const gvizRes = await fetch(gvizUrl, { cache: 'no-store' });
-          if (gvizRes.ok) {
-            const gvizText = await gvizRes.text();
-            const rows = parseGoogleSheetTable(gvizText, "Attendance");
-            if (rows && rows.length > 0) {
-              return rows.map((row) => {
-                const statusStr = (row[3] || '').toString().trim().toUpperCase();
-                const dt = row[1] || row[0] || '';
+          // 1. Direct fast fetch from Supabase attendance table
+          const { count, error: countErr } = await supabase
+            .from('attendance')
+            .select('*', { count: 'exact', head: true });
+
+          if (!countErr && typeof count === 'number' && count > 0) {
+            const batchSize = 1000;
+            const numBatches = Math.ceil(count / batchSize);
+            const promises = [];
+            for (let i = 0; i < numBatches; i++) {
+              promises.push(
+                supabase
+                  .from('attendance')
+                  .select('person_name, date_and_time, timestampe, status, map_link, address')
+                  .range(i * batchSize, (i + 1) * batchSize - 1)
+              );
+            }
+            const results = await Promise.all(promises);
+            const allRows = results.flatMap((r) => r.data || []);
+            if (allRows.length > 0) {
+              return allRows.map((row) => {
+                const statusStr = (row.status || '').toString().trim().toUpperCase();
+                const dt = row.date_and_time || row.timestampe || '';
                 return {
-                  personName: row[9] || '',
+                  personName: row.person_name || '',
                   dateTime: dt,
                   inDate: statusStr === 'IN' ? dt : '',
                   outDate: statusStr === 'OUT' ? dt : '',
-                  mapLink: row[7] || '',
-                  address: row[8] || '',
+                  mapLink: row.map_link || '',
+                  address: row.address || '',
                 };
               });
             }
           }
-        } catch (gvizErr) {
-          console.warn('GViz fetch error, falling back to Apps Script:', gvizErr);
+        } catch (supaErr) {
+          console.warn('Supabase attendance fetch error:', supaErr);
         }
-
-        if (OUTSTATION_SCRIPT_URL) {
-          try {
-            const res = await fetch(`${OUTSTATION_SCRIPT_URL}?action=getAllData&_=${Date.now()}`, { cache: 'no-store' });
-            if (res.ok) {
-              const text = await res.text();
-              const jsonStart = text.indexOf('{');
-              const jsonEnd = text.lastIndexOf('}');
-              if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-                const data = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-                if (data.status === 'success' && Array.isArray(data.attendance)) {
-                  return data.attendance;
-                }
-              }
-            }
-          } catch (e) {
-            console.warn('OUTSTATION_SCRIPT_URL fetch failed:', e);
-          }
-        }
-
         return [];
       };
 
-      const [rawAttendance, rawLeaves, joiningResponse, masterResponse, exitResponse] = await Promise.all([
+      const [rawAttendance, rawLeaves, joiningList, masterResponse, exitList] = await Promise.all([
         fetchRawAttendance(),
-        LEAVE_API_URL
-          ? fetch(`${LEAVE_API_URL}?sheet=${encodeURIComponent(LEAVE_SHEET_NAME)}&action=fetch`)
-            .then(async (leaveResponse) => {
-              if (!leaveResponse.ok) throw new Error(`Leave HTTP error! status: ${leaveResponse.status}`);
-              const leaveResult = await leaveResponse.json();
-              if (!leaveResult.success) throw new Error(leaveResult.error || 'Failed to fetch leave data');
-              return Array.isArray(leaveResult.data || leaveResult) ? (leaveResult.data || leaveResult) : [];
-            })
-            .catch((leaveError) => {
-              console.warn('Leave data skipped for absent calculation:', leaveError);
-              return [];
-            })
-          : Promise.resolve([]),
-        fetch(`${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS`)
-          .then(res => res.ok ? res.json() : null)
-          .catch(e => {
-            console.warn('Joining data skipped for Emp Code map:', e);
-            return null;
-          }),
-        fetch(`https://docs.google.com/spreadsheets/d/${OUTSTATION_SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=Master&cb=${Date.now()}`)
-          .then(async (res) => {
-            if (!res.ok) throw new Error(`Master sheet HTTP error! status: ${res.status}`);
-            const text = await res.text();
-            return parseGoogleSheetTable(text, "Master");
-          })
-          .catch((e) => {
-            console.warn('Master shift data skipped:', e);
+        supabase.from('leave_requests').select('requested_by, leave_from_date, leave_to_date, approval_status')
+          .then(({ data }) => data || [])
+          .catch((leaveError) => {
+            console.warn('Leave data skipped for absent calculation:', leaveError);
             return [];
           }),
-        LEAVING_API_URL
-          ? fetch(`${LEAVING_API_URL}?action=fetch&sheet=FMS&_=${Date.now()}`)
-            .then(async (res) => {
-              if (!res.ok) throw new Error(`Exit HTTP error! status: ${res.status}`);
-              const result = await res.json();
-              return Array.isArray(result.data) ? result.data : [];
-            })
-            .catch((e) => {
-              console.warn('Exit (leaving) data skipped:', e);
-              return [];
-            })
-          : Promise.resolve([])
+        supabase.from('joining_fms').select('id, employee_code, candidate_name, name_as_per_aadhar')
+          .then(({ data }) => data || [])
+          .catch(e => {
+            console.warn('Joining data skipped for Emp Code map:', e);
+            return [];
+          }),
+        supabase.from('users').select('name, username, latitude, longitude, range, time_in, time_out, category')
+          .then(({ data, error }) => {
+            if (!error && Array.isArray(data) && data.length > 0) {
+              return data.map((u) => [
+                u.name || '',
+                u.username || '',
+                '', '', '', '',
+                u.latitude != null ? String(u.latitude) : '',
+                u.longitude != null ? String(u.longitude) : '',
+                u.range != null ? String(u.range) : '',
+                u.time_in || '',
+                u.time_out || '',
+                u.category || '',
+              ]);
+            }
+            return [];
+          })
+          .catch(() => []),
+        supabase.from('leaving_fms').select('candidate_name, last_working_day')
+          .then(({ data }) => data || [])
+          .catch((e) => {
+            console.warn('Exit (leaving) data skipped:', e);
+            return [];
+          })
       ]);
 
       setMasterData(masterResponse || []);
 
-      // Map exited employees -> last working day (col H / index 7), keyed by
-      // candidate name (col K / index 10). Used to hide them from reports for
-      // months after their exit month.
       const exitMap = {};
-      (exitResponse || []).forEach((row) => {
-        const name = String(row[10] || '').trim();
+      (exitList || []).forEach((row) => {
+        const name = String(row.candidate_name || '').trim();
         if (!name || /^canidate name$|^candidate name$/i.test(name)) return;
-        const lwdRaw = row[7];
+        const lwdRaw = row.last_working_day;
         if (!lwdRaw) return;
         const lwd = new Date(lwdRaw);
         if (Number.isNaN(lwd.getTime())) return;
@@ -321,23 +591,15 @@ const OutstationAttendance = () => {
       });
       setExitedEmployees(exitMap);
 
-      // Build Employee Code Map from Joining Sheet
+      // Build Employee Code Map from Supabase joining_fms table
       const codeMap = {};
-      if (joiningResponse && joiningResponse.data) {
-        const rawJoining = joiningResponse.data;
-        if (rawJoining.length > 7) {
-          const headers = rawJoining[6] || [];
-          const getIndex = (name) => headers.findIndex(h => h && h.toString().trim().toLowerCase() === name.trim().toLowerCase());
-          const idxName = getIndex("Candidate Name") !== -1 ? getIndex("Candidate Name") : 10;
-          rawJoining.slice(7).forEach(row => {
-            const name = (row[idxName] || '').toString().trim();
-            const code = (row[0] || '').toString().trim(); // Column A (Index 0) is the Sr No / ID!
-            if (name && code) {
-              codeMap[normalizeName(name)] = code;
-            }
-          });
+      (joiningList || []).forEach(row => {
+        const name = (row.candidate_name || row.name_as_per_aadhar || '').toString().trim();
+        const code = (row.employee_code || row.id || '').toString().trim();
+        if (name && code) {
+          codeMap[normalizeName(name)] = code;
         }
-      }
+      });
       setEmpCodeMap(codeMap);
 
       // Group IN/OUT entries by person + date
@@ -960,127 +1222,66 @@ const OutstationAttendance = () => {
           </div>
           <div>
             <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Employee</label>
-            <div className="relative">
-              <User size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="h-10 w-full appearance-none rounded-lg border border-slate-300 bg-white pl-10 pr-9 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100">
-                <option value="">All Employees</option>
-                {employeeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
-              </select>
-              <ChevronDown size={17} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            </div>
+            <SearchableSelect
+              icon={User}
+              value={employeeFilter}
+              onChange={setEmployeeFilter}
+              options={employeeOptions}
+              allLabel="All Employees"
+              placeholder="Search employee..."
+            />
           </div>
           <div>
             <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Month</label>
-            <div className="relative">
-              <CalendarDays size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="h-10 w-full appearance-none rounded-lg border border-slate-300 bg-white pl-10 pr-9 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100">
-                <option value="">All Months</option>
-                {monthOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-              <ChevronDown size={17} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            </div>
+            <SearchableSelect
+              icon={CalendarDays}
+              value={monthFilter}
+              onChange={setMonthFilter}
+              options={monthOptions}
+              allLabel="All Months"
+              placeholder="Search month..."
+            />
           </div>
           <div>
             <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Year</label>
-            <div className="relative">
-              <CalendarDays size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="h-10 w-full appearance-none rounded-lg border border-slate-300 bg-white pl-10 pr-9 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100">
-                <option value="">All Years</option>
-                {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-              </select>
-              <ChevronDown size={17} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            </div>
+            <SearchableSelect
+              icon={CalendarDays}
+              value={yearFilter}
+              onChange={setYearFilter}
+              options={yearOptions}
+              allLabel="All Years"
+              placeholder="Search year..."
+            />
           </div>
           <div>
             <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Lat / Long</label>
-            <div className="relative" ref={latLngRef}>
-              <MapPin size={17} className="absolute left-3 top-1/2 -translate-y-1/2 z-10 text-slate-400" />
-              <button
-                type="button"
-                onClick={() => setLatLngOpen((o) => !o)}
-                className="h-10 w-full appearance-none rounded-lg border border-slate-300 bg-white pl-10 pr-9 text-left text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100"
-              >
-                <span className="block truncate">{latLngFilter.length === 0 ? 'All Locations' : `${latLngFilter.length} selected`}</span>
-              </button>
-              <ChevronDown size={17} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              {latLngOpen && (
-                <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-                  <button
-                    type="button"
-                    onClick={() => setLatLngFilter([])}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                  >
-                    <input type="checkbox" readOnly checked={latLngFilter.length === 0} className="h-4 w-4 rounded border-slate-300 text-navy" />
-                    All Locations
-                  </button>
-                  {latLngOptions.map((ll) => {
-                    const checked = latLngFilter.includes(ll);
-                    return (
-                      <label key={ll} className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            setLatLngFilter((prev) =>
-                              prev.includes(ll) ? prev.filter((x) => x !== ll) : [...prev, ll]
-                            )
-                          }
-                          className="h-4 w-4 rounded border-slate-300 text-navy"
-                        />
-                        <span className="min-w-0">
-                          <span className="block truncate">{latLngLabels[ll] || ll}</span>
-                          {latLngLabels[ll] && <span className="block truncate text-[10px] font-medium text-slate-400">{ll}</span>}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
+            <MultiSelectDropdown
+              icon={MapPin}
+              selected={latLngFilter}
+              onChange={setLatLngFilter}
+              options={latLngOptions}
+              allLabel="All Locations"
+              placeholder="Search location..."
+              renderLabel={(ll) => (
+                <span className="block min-w-0">
+                  <span className="block truncate font-semibold">{latLngLabels[ll] || ll}</span>
+                  {latLngLabels[ll] && (
+                    <span className="block truncate text-[10px] font-medium text-slate-400">{ll}</span>
+                  )}
+                </span>
               )}
-            </div>
+            />
           </div>
           <div>
             <label className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">Category</label>
-            <div className="relative" ref={categoryRef}>
-              <Table2 size={17} className="absolute left-3 top-1/2 -translate-y-1/2 z-10 text-slate-400" />
-              <button
-                type="button"
-                onClick={() => setCategoryOpen((o) => !o)}
-                className="h-10 w-full appearance-none rounded-lg border border-slate-300 bg-white pl-10 pr-9 text-left text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-2 focus:ring-indigo-100"
-              >
-                <span className="block truncate">{categoryFilter.length === 0 ? 'All Categories' : `${categoryFilter.length} selected`}</span>
-              </button>
-              <ChevronDown size={17} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              {categoryOpen && (
-                <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-                  <button
-                    type="button"
-                    onClick={() => setCategoryFilter([])}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-slate-600 hover:bg-slate-50"
-                  >
-                    <input type="checkbox" readOnly checked={categoryFilter.length === 0} className="h-4 w-4 rounded border-slate-300 text-navy" />
-                    All Categories
-                  </button>
-                  {categoryOptions.map((c) => {
-                    const checked = categoryFilter.includes(c);
-                    return (
-                      <label key={c} className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            setCategoryFilter((prev) =>
-                              prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
-                            )
-                          }
-                          className="h-4 w-4 rounded border-slate-300 text-navy"
-                        />
-                        {c}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            <MultiSelectDropdown
+              icon={Table2}
+              selected={categoryFilter}
+              onChange={setCategoryFilter}
+              options={categoryOptions}
+              allLabel="All Categories"
+              placeholder="Search category..."
+            />
           </div>
         </div>
       </div>

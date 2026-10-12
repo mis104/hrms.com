@@ -1,264 +1,293 @@
-import React, { useEffect, useState } from "react";
-import { Search, Clock, HistoryIcon, Plus, X, CheckCircle } from "lucide-react";
-
+import React, { useEffect, useState, useMemo, useRef } from "react";
+import {
+  Search,
+  Clock,
+  CheckCircle,
+  Plus,
+  X,
+  RefreshCw,
+  Download,
+  Filter,
+  Users,
+  Phone,
+  Building2,
+  Briefcase,
+  Layers,
+  ChevronDown,
+  Check,
+  LayoutList,
+  LayoutGrid,
+} from "lucide-react";
 import toast from "react-hot-toast";
+import * as XLSX from "xlsx";
+import { supabase } from "../services/supabaseClient";
+import { recordDataResponse } from "../services/supabaseService";
+
+// Low Egress Cache
+const CACHE_KEY = "hrms_job_agencies_fms_cache_v1";
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+const DEFAULT_JOB_CONSULTANCIES = [
+  "Talent Consultancy",
+  "Zenix Consultancy",
+  "SS Consultancy",
+  "CG Security Placement",
+  "Cafyo Consultancy",
+  "Find Da",
+  "ANM Consultancy",
+  "Laxmi Consultancy",
+  "Alok ( Freelencer )",
+  "Sonalam Consultancy",
+  "Direct Placement Service"
+];
+
+const getCurrentFormattedTimestamp = () => {
+  const now = new Date();
+  const d = String(now.getDate()).padStart(2, "0");
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const y = now.getFullYear();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  return `${d}-${m}-${y} ${hh}:${mm}`;
+};
+
+const FilterDropdown = ({ label, value, onChange, options = [], icon: Icon, allLabel = "All" }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const filteredOptions = useMemo(() => {
+    if (!searchQuery.trim()) return options;
+    return options.filter((opt) => String(opt).toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [options, searchQuery]);
+
+  const selectedDisplay = !value || value === "all" ? label : value;
+
+  return (
+    <div className="relative flex-1 min-w-[140px] sm:min-w-[160px]" style={{ position: "relative", zIndex: isOpen ? 9999 : 20 }} ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full px-3 py-2 text-xs rounded-xl border flex items-center justify-between gap-2 transition-all bg-white cursor-pointer ${
+          isOpen ? "border-indigo-500 ring-2 ring-indigo-500/20 shadow-sm" : value && value !== "all" ? "border-indigo-300 bg-indigo-50/40 text-indigo-900 font-semibold" : "border-slate-200 text-slate-700"
+        }`}
+      >
+        <div className="flex items-center gap-2 truncate">
+          {Icon && <Icon className={`w-4 h-4 shrink-0 ${value && value !== "all" ? "text-indigo-600" : "text-slate-400"}`} />}
+          <span className="truncate">{selectedDisplay}</span>
+        </div>
+        <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180 text-indigo-600" : ""}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-full mt-1.5 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-300 dark:border-slate-700 py-2 animate-fadeIn min-w-[200px] ring-1 ring-black/10 overflow-hidden" style={{ position: "absolute", zIndex: 99999 }}>
+          {options.length > 5 && (
+            <div className="px-2.5 pb-2 mb-1 border-b border-slate-100 dark:border-slate-800">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder={`Search ${label}...`}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-lg border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  autoFocus
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-56 overflow-y-auto px-1 space-y-0.5 custom-scrollbar">
+            <button
+              type="button"
+              onClick={() => { onChange("all"); setIsOpen(false); setSearchQuery(""); }}
+              className={`w-full px-3 py-2 text-xs text-left rounded-xl flex items-center justify-between transition-colors cursor-pointer ${!value || value === "all" ? "bg-indigo-50 text-indigo-700 font-semibold" : "text-slate-700 hover:bg-slate-100"}`}
+            >
+              <span>{allLabel}</span>
+              {(!value || value === "all") && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+            </button>
+
+            {filteredOptions.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => { onChange(opt); setIsOpen(false); setSearchQuery(""); }}
+                className={`w-full px-3 py-2 text-xs text-left rounded-xl flex items-center justify-between transition-colors cursor-pointer ${value === opt ? "bg-indigo-50 text-indigo-700 font-semibold" : "text-slate-700 hover:bg-slate-100"}`}
+              >
+                <span className="truncate">{opt}</span>
+                {value === opt && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const CallingForJobAgencies = () => {
-
+  const [fmsRecords, setFmsRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("pending");
-
-  const [historyIndentData, setHistoryIndentData] = useState([]);
-
+  const [viewMode, setViewMode] = useState("table");
   const [searchTerm, setSearchTerm] = useState("");
-  const [deptFilter, setDeptFilter] = useState("");
-  const [desigFilter, setDesigFilter] = useState("");
+  const [deptFilter, setDeptFilter] = useState("all");
+  const [postFilter, setPostFilter] = useState("all");
 
+  const [consultancyList, setConsultancyList] = useState(DEFAULT_JOB_CONSULTANCIES);
   const [showModal, setShowModal] = useState(false);
-  const [fileUploading, setFileUploading] = useState(false);
-  const [formData, setFormData] = useState({
-    post: "",
-    gender: "",
-    department: "",
-    prefer: "",
-    numberOfPost: "",
-    competitionDate: "",
-    indentNumber: "",
-    timestamp: "",
-    experience: "", // New field for experience input
-
-    salary: "",
-    officeTimingFrom: "",
-    officeTimingTo: "",
-    typeOfWeek: "",
-    residence: "",
-    indenterName: "",
-
-    socialSite: "",
-    closedBy: "",
-    jobConsultancyNames: [], // Updated to handle multiple selected consultancies
-    consultancyContacts: {}, // New: { [agencyName]: { contactPerson: "", contactNumber: "" } }
-    socialSiteTypes: [],
-    uploadedFileUrl: "",
-  });
-  const [consultancyOptions, setConsultancyOptions] = useState([]); // List of consultancies from USER sheet
-  const [socialSiteOptions, setSocialSiteOptions] = useState([]); // List of social sites from Master sheet column D
-  const [indentData, setIndentData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [tableLoading, setTableLoading] = useState(false);
+  const [selectedIndent, setSelectedIndent] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Local State Replacement for Store
-  const [masterData, setMasterData] = useState([]);
-  const [globalFmsData, setGlobalFmsData] = useState([]);
-  const [globalUserData, setGlobalUserData] = useState([]);
-  const [dataResponseData, setDataResponseData] = useState([]);
-  const [storeLoading, setStoreLoading] = useState(true);
+  const [formData, setFormData] = useState({
+    agencyStatus: "Yes",
+    jobConsultancyNames: [],
+    consultancyContacts: {},
+  });
 
-  const fetchData = async (isBackground = false) => {
-    if (!isBackground) {
-      setStoreLoading(true);
-      setTableLoading(true);
-    }
+  const loadData = async (forceRefresh = false) => {
     try {
-      const cb = `&_=${Date.now()}`;
-      const [resMaster, resFMS, resUser, resDR] = await Promise.all([
-        fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=read&sheet=Master${cb}`),
-        fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=read&sheet=FMS${cb}`),
-        fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=read&sheet=USER${cb}`),
-        fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=read&sheet=Data Resposnse${cb}`)
-      ]);
-
-      const jsonMaster = await resMaster.json();
-      const jsonFMS = await resFMS.json();
-      const jsonUser = await resUser.json();
-      const jsonDR = await resDR.json();
-
-      if (jsonMaster.success) setMasterData(jsonMaster.data);
-      if (jsonFMS.success) setGlobalFmsData(jsonFMS.data);
-      if (jsonUser.success) setGlobalUserData(jsonUser.data);
-      if (jsonDR.success) setDataResponseData(jsonDR.data);
-
-    } catch (error) {
-      console.error("CallingForJobAgencies Data Fetch Error:", error);
-      toast.error("Failed to load data");
-    } finally {
-      if (!isBackground) {
-        setStoreLoading(false);
-        setTableLoading(false);
+      setLoading(true);
+      if (!forceRefresh) {
+        const cached = sessionStorage.getItem(CACHE_KEY);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Date.now() - parsed.timestamp < CACHE_TTL_MS && Array.isArray(parsed.data)) {
+            setFmsRecords(parsed.data);
+            setLoading(false);
+            return;
+          }
+        }
       }
+
+      const { data, error } = await supabase.from("fms").select("*").order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const records = data || [];
+      setFmsRecords(records);
+      sessionStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: records }));
+    } catch (err) {
+      console.error("Error loading FMS records:", err);
+      toast.error("Failed to load records: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
+    loadData();
   }, []);
 
-  const refreshData = fetchData;
+  const { pendingData, historyData, departments, posts, kpiStats } = useMemo(() => {
+    const pending = [];
+    const history = [];
+    let pendingCount = 0;
 
-  useEffect(() => {
-    setTableLoading(storeLoading);
-  }, [storeLoading]);
+    fmsRecords.forEach((item) => {
+      const p2 = (item.stage2_planned || "").toString().trim();
+      const a2 = (item.stage2_actual || "").toString().trim();
+      const isPending = p2 !== "" && a2 === "";
+      const isDone = a2 !== "";
 
-  // Master Data (Social Sites)
-  useEffect(() => {
-    if (!masterData || masterData.length === 0) return;
-    const data = masterData;
-    const socialSitesList = [...new Set(
-      data.slice(1).map(row => row[3]).filter(val => val && val.trim())
-    )];
-    setSocialSiteOptions(socialSitesList);
-  }, [masterData]);
+      if (isPending) pendingCount++;
 
-  // User Data (Consultancy Names)
-  useEffect(() => {
-    if (!globalUserData || globalUserData.length === 0) return;
-    const options = globalUserData.slice(1)
-      .map(row => row[9])
-      .filter(name => name && name.toString().trim() !== "");
-    setConsultancyOptions([...new Set(options)]);
-  }, [globalUserData]);
+      const recordObj = { ...item, isPending, isDone };
+      if (isPending) {
+        pending.push(recordObj);
+      } else if (isDone || item.position_status !== "CLOSED") {
+        history.push(recordObj);
+      }
+    });
 
-  // FMS Data (Indent Data)
-  useEffect(() => {
-    if (!globalFmsData || globalFmsData.length < 7) {
-      setIndentData([]);
-      setHistoryIndentData([]);
-      return;
-    }
+    const depts = Array.from(new Set(fmsRecords.map((r) => r.department).filter(Boolean))).sort();
+    const postOptions = Array.from(new Set(fmsRecords.map((r) => r.post).filter(Boolean))).sort();
 
+    return {
+      pendingData: pending,
+      historyData: history,
+      departments: depts,
+      posts: postOptions,
+      kpiStats: {
+        total: fmsRecords.length,
+        pending: pendingCount,
+        completed: history.length,
+      },
+    };
+  }, [fmsRecords]);
 
-    // 🔥 Data Response Map (IndentNumber → extra info)
-    const dataResponseMap = {};
-    dataResponseData?.slice(1).forEach(row => {
-      const indentNo = row[0]; // Column A (Indent Number)
-      if (!indentNo) return;
+  const currentList = activeTab === "pending" ? pendingData : historyData;
 
-      dataResponseMap[indentNo] = {
-        status: row[3],              // Column D
-        jobConsultancy: row[6],      // Column G
-        contactPerson: row[11],      // Column L
-        contactNumber: row[12],      // Column M
+  const filteredData = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim();
+    return currentList.filter((item) => {
+      const matchSearch =
+        !term ||
+        (item.indent_no || "").toLowerCase().includes(term) ||
+        (item.post || "").toLowerCase().includes(term) ||
+        (item.person_name || "").toLowerCase().includes(term) ||
+        (item.department || "").toLowerCase().includes(term) ||
+        (item.job_consultancy || "").toLowerCase().includes(term);
+
+      const matchDept = deptFilter === "all" || item.department === deptFilter;
+      const matchPost = postFilter === "all" || item.post === postFilter;
+
+      return matchSearch && matchDept && matchPost;
+    }).sort((a, b) => {
+      const aIndent = String(a.indent_no || "").trim();
+      const bIndent = String(b.indent_no || "").trim();
+      return bIndent.localeCompare(aIndent, undefined, { numeric: true, sensitivity: "base" });
+    });
+  }, [currentList, searchTerm, deptFilter, postFilter]);
+
+  const handleOpenModal = (indent) => {
+    setSelectedIndent(indent);
+    const existingConsultancies = (indent.job_consultancy || "")
+      .split(",")
+      .map((c) => c.trim())
+      .filter(Boolean);
+
+    const contactPersons = (indent.contact_person_name || "").split(",").map((p) => p.trim());
+    const contactNumbers = (indent.contact_no || "").split(",").map((n) => n.trim());
+
+    const contactsObj = {};
+    existingConsultancies.forEach((name, idx) => {
+      contactsObj[name] = {
+        contactPerson: contactPersons[idx] || "",
+        contactNumber: contactNumbers[idx] || "",
       };
     });
 
+    setFormData({
+      agencyStatus: indent.stage2_status || "Yes",
+      jobConsultancyNames: existingConsultancies,
+      consultancyContacts: contactsObj,
+    });
 
-
-    const resultData = globalFmsData;
-    // Find headers dynamically
-    let headerRowIndex = 5; // Default fallback
-    for (let i = 0; i < Math.min(resultData.length, 20); i++) {
-      const row = resultData[i];
-      if (row.includes("Indent Number") || row.includes("Post")) {
-        headerRowIndex = i;
-        break;
-      }
-    }
-
-    const headers = resultData[headerRowIndex].map((h) => h?.toString().trim());
-    const dataFromRow7 = resultData.slice(headerRowIndex + 1);
-
-    // Find column indices
-    const timestampIndex = headers.indexOf("Timestamp");
-    const postIndex = headers.indexOf("Post");
-    const genderIndex = headers.indexOf("Gender");
-    const departmentIndex = headers.indexOf("Department");
-    const preferIndex = headers.indexOf("Prefer");
-    const noOFPostIndex = headers.indexOf("Number Of Posts");
-    const completionDateIndex = headers.indexOf("Completion Date");
-    const experienceIndex = headers.indexOf("Experience");
-    const jobConsultancyNameIndex = headers.indexOf("Job Cunsultancy Name");
-    const salaryIndex = headers.indexOf("Salary");
-    const officeTimingIndex = headers.indexOf("Office Timing");
-    const typeOfWeekIndex = headers.indexOf("Type Of Week");
-    const requiredQualificationsIndex = headers.indexOf("Required Qualifications");
-    const residenceIndex = headers.indexOf("Residence");
-    const closeByIndex = headers.indexOf("Close By");
-    const cunsultancyNumberIndex = headers.indexOf("Cunsultancy Number");
-    const cunsultancyScreensortImageIndex = headers.indexOf("Cunsultancy Screensort Image");
-    const siteStatusIndex = headers.indexOf("Site Status");
-    const socialSiteTypesIndex = headers.indexOf("Social Site Types");
-    const CunsultancyScreensortImage = headers.indexOf("Cunsultancy Screensort Image");
-    const CunsultancyNumber = headers.indexOf("Cunsultancy Number");
-    const JobCunsultancyName = headers.indexOf("Job Cunsultancy Name");
-
-    const processedData = dataFromRow7.map((row) => ({
-      timestamp: row[timestampIndex],
-      indentNumber: row[4], // Column E
-      indenterName: row[5], // Column F
-      post: row[postIndex],
-      gender: row[genderIndex],
-      department: row[departmentIndex],
-      prefer: row[preferIndex],
-      noOfPost: row[noOFPostIndex],
-      completionDate: row[completionDateIndex],
-      experience: row[experienceIndex],
-      jobConsultancyName: row[jobConsultancyNameIndex],
-      salary: row[salaryIndex],
-      officeTiming: row[officeTimingIndex],
-      typeOfWeek: row[typeOfWeekIndex],
-      requiredQualifications: row[requiredQualificationsIndex],
-      residence: row[residenceIndex],
-      closeBy: row[closeByIndex],
-      cunsultancyNumber: row[cunsultancyNumberIndex],
-      cunsultancyScreensortImage: row[cunsultancyScreensortImageIndex],
-      siteStatus: row[siteStatusIndex],
-      socialSiteTypes: row[socialSiteTypesIndex],
-      columnX: row[23],
-      columnY: row[24],
-      CunsultancyScreensortImage: row[CunsultancyScreensortImage],
-      CunsultancyNumber: row[CunsultancyNumber],
-      JobCunsultancyName: row[JobCunsultancyName],
-      statusDR: dataResponseMap[row[4]]?.status || "",
-      jobConsultancyDR: dataResponseMap[row[4]]?.jobConsultancy || "",
-      contactPersonDR: dataResponseMap[row[4]]?.contactPerson || "",
-      contactNumberDR: dataResponseMap[row[4]]?.contactNumber || "",
-
-    }));
-
-    const pendingTasks = processedData.filter((item) => item.columnX && !item.columnY);
-    const historyTasks = processedData.filter((item) => item.columnX && item.columnY);
-
-    setHistoryIndentData(historyTasks);
-    setIndentData(pendingTasks);
-
-  }, [globalFmsData]);
-
-  // Data loading handled by effects below
-
-  const getCurrentTimestamp = () => {
-    const now = new Date();
-    const day = String(now.getDate()).padStart(2, "0");
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const year = String(now.getFullYear()).slice(-2);
-    const hours = String(now.getHours()).padStart(2, "0");
-    const minutes = String(now.getMinutes()).padStart(2, "0");
-    const seconds = String(now.getSeconds()).padStart(2, "0");
-
-    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    setShowModal(true);
   };
 
-  // fetchIndentDataFromRow7 replaced by effects
-
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleConsultancyChange = (option) => {
+  const handleConsultancyToggle = (agencyName) => {
     setFormData((prev) => {
-      const isSelected = prev.jobConsultancyNames.includes(option);
+      const isSelected = prev.jobConsultancyNames.includes(agencyName);
       const updatedNames = isSelected
-        ? prev.jobConsultancyNames.filter((name) => name !== option)
-        : [...prev.jobConsultancyNames, option];
+        ? prev.jobConsultancyNames.filter((n) => n !== agencyName)
+        : [...prev.jobConsultancyNames, agencyName];
 
       const updatedContacts = { ...prev.consultancyContacts };
       if (isSelected) {
-        delete updatedContacts[option];
+        delete updatedContacts[agencyName];
       } else {
-        updatedContacts[option] = { contactPerson: "", contactNumber: "" };
+        updatedContacts[agencyName] = { contactPerson: "", contactNumber: "" };
       }
 
       return {
@@ -269,7 +298,7 @@ const CallingForJobAgencies = () => {
     });
   };
 
-  const handleContactInfoChange = (agencyName, field, value) => {
+  const handleContactFieldChange = (agencyName, field, value) => {
     setFormData((prev) => ({
       ...prev,
       consultancyContacts: {
@@ -281,859 +310,291 @@ const CallingForJobAgencies = () => {
       },
     }));
   };
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setFileUploading(true); // Start upload
-
-    try {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64Data = reader.result;
-
-        const response = await fetch(
-          import.meta.env.VITE_GOOGLE_SHEET_URL,
-          {
-            method: "POST",
-            body: new URLSearchParams({
-              action: "uploadFile",
-              base64Data: base64Data,
-              fileName: file.name,
-              mimeType: file.type,
-              folderId: "1ok_nkIuB761YbEMx8yXtdjCGrtKI7YhqcVUzGYve8FYA6svVawuyvsZbz326MXb94E01DgGc",
-            }),
-          }
-        );
-
-        const result = await response.json();
-        console.log("Upload result:", result); // Debug
-
-        if (result.success) {
-          setFormData((prev) => ({
-            ...prev,
-            uploadedFileUrl: result.fileUrl,
-          }));
-          toast.success("File uploaded successfully!");
-        } else {
-          toast.error(
-            "File upload failed: " + (result.error || "Unknown error")
-          );
-        }
-        setFileUploading(false); // Upload complete
-      };
-
-      reader.onerror = () => {
-        toast.error("Error reading file");
-        setFileUploading(false);
-      };
-
-      reader.readAsDataURL(file);
-    } catch (error) {
-      console.error("Upload error:", error);
-      toast.error("File upload error");
-      setFileUploading(false);
-    }
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!selectedIndent) return;
 
-    if (
-      formData.jobConsultancyNames.length === 0
-    ) {
-      toast.error("Please select at least one Job Consultancy");
+    if (formData.jobConsultancyNames.length === 0) {
+      toast.error("Please select at least one Job Consultancy!");
       return;
     }
 
     try {
       setSubmitting(true);
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const day = String(now.getDate()).padStart(2, '0');
-      const hours = String(now.getHours()).padStart(2, '0');
-      const minutes = String(now.getMinutes()).padStart(2, '0');
-      const seconds = String(now.getSeconds()).padStart(2, '0');
-      const timestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-
-      const PO_NUMBER = "PO-2";
-      const consultancyNames = formData.jobConsultancyNames.join(", ");
-      const contactPersons = formData.jobConsultancyNames
-        .map(name => formData.consultancyContacts[name]?.contactPerson || "")
+      const timestamp = getCurrentFormattedTimestamp();
+      const consultanciesStr = formData.jobConsultancyNames.join(", ");
+      const contactPersonsStr = formData.jobConsultancyNames
+        .map((name) => formData.consultancyContacts[name]?.contactPerson || "")
         .join(", ");
-      const contactNumbers = formData.jobConsultancyNames
-        .map(name => formData.consultancyContacts[name]?.contactNumber || "")
+      const contactNosStr = formData.jobConsultancyNames
+        .map((name) => formData.consultancyContacts[name]?.contactNumber || "")
         .join(", ");
 
-      // Row Data: [Indent Number, Step Code ("PO-2"), Timestamp, Status, "", "", Job Consultancy Name, Attachment URL, "", "", "", Contact Person, Contact Number]
-      // Mapping:
-      // A (0): Indent Number
-      // B (1): Step Code
-      // C (2): Timestamp
-      // D (3): Status
-      // E-K (4-10): Placeholders or empty
-      // L (11): Contact Person
-      // M (12): Contact Number
+      const updates = {
+        stage2_actual: timestamp,
+        stage2_status: formData.agencyStatus,
+        job_consultancy: consultanciesStr,
+        contact_person_name: contactPersonsStr,
+        contact_no: contactNosStr,
+        updated_at: new Date().toISOString(),
+      };
 
-      const dataResponseRow = [
-        formData.indentNumber,
-        PO_NUMBER,
+      await recordDataResponse({
+        uniqueId: selectedIndent.indent_no,
+        stepCode: "PO-2",
+        status: formData.agencyStatus,
+        jobConsultancy: consultanciesStr,
+        contactPersonName: contactPersonsStr,
+        contactNo: contactNosStr,
         timestamp,
-        formData.status,
-        "", // Col E 
-        "", // Col F 
-        consultancyNames, // Col G: Consultancy Name
-        "", // Col H: Attachment URL (removed)
-        "", // Col I
-        "", // Col J
-        "", // Col K
-        contactPersons, // Col L: Contact Person
-        contactNumbers, // Col M: Contact Number
-      ];
+      });
 
-      const response = await fetch(
-        import.meta.env.VITE_GOOGLE_SHEET_URL,
-        {
-          method: "POST",
-          body: new URLSearchParams({
-            sheetName: "Data Resposnse",
-            action: "bulkInsert",
-            rowsData: JSON.stringify([dataResponseRow]),
-          }),
-        }
-      );
+      const { error } = await supabase
+        .from("fms")
+        .update(updates)
+        .eq("indent_no", selectedIndent.indent_no);
 
-      const result = await response.json();
-      if (result.success) {
-        toast.success("Posted successfully!");
-        
-        // Optimistic UI update for instant feedback
-        setIndentData(prev => prev.filter(item => item.indentNumber !== formData.indentNumber));
-        setHistoryIndentData(prev => [{
-            ...formData, 
-            columnX: timestamp, 
-            columnY: timestamp, 
-            jobConsultancyDR: consultancyNames,
-            contactPersonDR: contactPersons,
-            contactNumberDR: contactNumbers
-        }, ...prev]);
+      if (error) throw error;
 
-        setFormData((prev) => ({
-          ...prev,
-          jobConsultancyNames: [],
-          consultancyContacts: {},
-          uploadedFileUrl: "",
-        }));
-        setShowModal(false);
-
-        fetchData(true);
-      } else {
-        toast.error("Failed to submit: " + (result.error || "Unknown error"));
-      }
-    } catch (error) {
-      console.error("Submit error:", error);
-      toast.error("Something went wrong!");
+      toast.success("Job agency calling task updated successfully!");
+      setShowModal(false);
+      loadData(true);
+    } catch (err) {
+      console.error("Submission error:", err);
+      toast.error("Submission failed: " + err.message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Helper function to format date for Google Sheets
-  const formatDateForSheet = (dateString) => {
-    if (!dateString) return "";
-    const date = new Date(dateString);
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-    const year = date.getFullYear();
-    return `${month}/${day}/${year}`;
-  };
-
-  const handleCancel = () => {
-    setFormData({
-      post: "",
-      gender: "",
-      department: "",
-      prefer: "",
-      numberOfPost: "",
-      competitionDate: "",
-      indentNumber: "",
-      timestamp: "",
-      experience: "",
-
-      salary: "",
-      officeTimingFrom: "",
-      officeTimingTo: "",
-      typeOfWeek: "",
-      residence: "",
-      indenterName: "",
-
-      closedBy: "",
-      socialSiteTypes: [],
-      socialSite: "",
-      jobConsultancyNames: [],
-      contactPerson: "",
-      contactNumber: "",
-      uploadedFileUrl: "",
-      status: "Yes",
-    });
-    setShowModal(false);
-  };
-
-  const handlePostClick = (item) => {
-    // Pre-fill only specific fields
-    setFormData({
-      ...formData,
-      indentNumber: item.indentNumber, // Store this for update
-      jobConsultancyNames: [],
-      consultancyContacts: {},
-      uploadedFileUrl: "",
-      status: "Yes",
-    });
-    setShowModal(true);
-  };
-
-  const filteredPendingData = indentData.filter((item) => {
-    const term = searchTerm.toLowerCase();
-    const matchesSearch =
-      (item.post || "").toLowerCase().includes(term) ||
-      (item.indentNumber || "").toLowerCase().includes(term) ||
-      (item.department || "").toLowerCase().includes(term);
-
-    const matchesDept = !deptFilter || item.department === deptFilter;
-    const matchesDesig = !desigFilter || item.post === desigFilter; // In this page, 'post' seems to be the designation
-
-    return matchesSearch && matchesDept && matchesDesig;
-  });
-
-  const filteredHistoryData = historyIndentData.filter((item) => {
-    const term = searchTerm.toLowerCase();
-    const matchesSearch =
-      (item.siteStatus || "").toLowerCase().includes(term) ||
-      (item.socialSiteTypes || "").toLowerCase().includes(term) ||
-      (item.indentNumber || "").toLowerCase().includes(term) ||
-      (item.department || "").toLowerCase().includes(term);
-
-    const matchesDept = !deptFilter || item.department === deptFilter;
-    const matchesDesig = !desigFilter || item.post === desigFilter;
-
-    return matchesSearch && matchesDept && matchesDesig;
-  });
-
-  // Extract unique departments and posts (designations) for filters
-  const allData = [...indentData, ...historyIndentData];
-  const departments = [...new Set(allData.map(item => item.department))].filter(Boolean).sort();
-  const posts = [...new Set(allData.map(item => item.post))].filter(Boolean).sort();
-
   return (
-    <div className="space-y-6 page-content p-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-800">Calling For Job Agencies</h1>
+    <div className="min-h-screen bg-slate-50/60 p-3 sm:p-6 space-y-6">
+      {/* HERO BANNER */}
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-6 sm:p-8 text-white shadow-2xl border border-slate-800">
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 text-xs font-semibold">
+              <Users className="w-3.5 h-3.5 animate-pulse text-indigo-400" />
+              <span>Step PO-2 • Recruitment FMS</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+              Calling For Jobs Agencies / Consultancy
+            </h1>
+            <p className="text-slate-300 text-xs sm:text-sm max-w-xl leading-relaxed">
+              Track agency outreaches and record consultancy SPOC contact info with live Supabase database synchronization.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              onClick={() => loadData(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/10 transition-all cursor-pointer"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin text-indigo-400" : ""}`} />
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        {/* KPI Cards */}
+        <div className="grid grid-cols-3 gap-3 sm:gap-4 mt-6 pt-6 border-t border-white/10">
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-3.5">
+            <span className="text-xs font-medium text-slate-300">Total Indents</span>
+            <div className="text-xl sm:text-2xl font-black text-white mt-1">{kpiStats.total}</div>
+          </div>
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-3.5">
+            <span className="text-xs font-medium text-amber-300">PO-2 Pending Calling</span>
+            <div className="text-xl sm:text-2xl font-black text-amber-400 mt-1">{kpiStats.pending}</div>
+          </div>
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-3.5">
+            <span className="text-xs font-medium text-emerald-300">Completed (History)</span>
+            <div className="text-xl sm:text-2xl font-black text-emerald-400 mt-1">{kpiStats.completed}</div>
+          </div>
+        </div>
       </div>
 
-      {/* Modal */}
-      {showModal && (
-        <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center p-6 border-b border-gray-200 sticky top-0 bg-white z-10">
-              <h3 className="text-lg font-medium text-gray-800">
-                Calling Job
-                Agencies
-              </h3>
-              <button
-                onClick={handleCancel}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <X size={20} />
+      {/* FILTER BAR */}
+      <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 space-y-3">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          <div className="flex items-center p-1 bg-slate-100 rounded-xl shrink-0">
+            <button
+              onClick={() => setActiveTab("pending")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                activeTab === "pending" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5 text-amber-500" />
+              <span>Pending Calling ({pendingData.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                activeTab === "history" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+              <span>History ({historyData.length})</span>
+            </button>
+          </div>
+
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search by Indent, Post, Agency..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <FilterDropdown label="All Departments" value={deptFilter} onChange={setDeptFilter} options={departments} icon={Building2} />
+            <FilterDropdown label="All Posts" value={postFilter} onChange={setPostFilter} options={posts} icon={Briefcase} />
+          </div>
+        </div>
+      </div>
+
+      {/* TABLE */}
+      {loading ? (
+        <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm space-y-3">
+          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-sm font-bold text-slate-700">Loading Indents...</p>
+        </div>
+      ) : filteredData.length === 0 ? (
+        <div className="p-16 text-center bg-white rounded-3xl border border-slate-200 shadow-sm space-y-3">
+          <Users className="w-10 h-10 text-slate-400 mx-auto" />
+          <h3 className="text-base font-bold text-slate-800">No Indents Found</h3>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-bold uppercase tracking-wider text-[11px]">
+                  <th className="py-3 px-4 text-center">Action</th>
+                  <th className="py-3 px-4">Indent No.</th>
+                  <th className="py-3 px-4">Indenter Name</th>
+                  <th className="py-3 px-4">Post</th>
+                  <th className="py-3 px-4">Department</th>
+                  <th className="py-3 px-4">Positions</th>
+                  <th className="py-3 px-4">Consultancies</th>
+                  <th className="py-3 px-4">Contact Persons</th>
+                  <th className="py-3 px-4">Contact Numbers</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {filteredData.map((indent) => (
+                  <tr key={indent.id || indent.indent_no} className="hover:bg-indigo-50/40 transition-colors">
+                    <td className="py-3 px-4 text-center">
+                      <button
+                        onClick={() => handleOpenModal(indent)}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs shadow-sm transition-all cursor-pointer flex items-center gap-1.5 mx-auto"
+                      >
+                        <Users className="w-3.5 h-3.5" />
+                        <span>{activeTab === "pending" ? "Update Agency" : "Edit Details"}</span>
+                      </button>
+                    </td>
+                    <td className="py-3 px-4 font-bold text-slate-900">
+                      <span className="px-2 py-1 bg-slate-100 rounded-lg text-slate-800 border border-slate-200">
+                        {indent.indent_no}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 font-medium text-slate-800">{indent.person_name || indent.indenter_name || "-"}</td>
+                    <td className="py-3 px-4 font-bold text-indigo-700">{indent.post || "-"}</td>
+                    <td className="py-3 px-4">{indent.department || "-"}</td>
+                    <td className="py-3 px-4 font-bold">{indent.number_of_post || indent.positions_num || "1"}</td>
+                    <td className="py-3 px-4 font-medium text-slate-800">{indent.job_consultancy || "-"}</td>
+                    <td className="py-3 px-4">{indent.contact_person_name || "-"}</td>
+                    <td className="py-3 px-4">{indent.contact_no || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL */}
+      {showModal && selectedIndent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-xl max-h-[90vh] bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+            <div className="px-6 py-4 bg-gradient-to-r from-slate-900 to-indigo-950 text-white flex items-center justify-between shrink-0">
+              <h3 className="text-base font-bold text-white">Update Job Agency Calling (PO-2)</h3>
+              <button onClick={() => setShowModal(false)} className="p-1 text-slate-400 hover:text-white rounded-lg cursor-pointer">
+                <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
 
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Indent Number
-                </label>
-
-                <input
-                  type="text"
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy"
-                  disabled
-                  value={formData.indentNumber}
-                />
+            <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4 text-xs sm:text-sm custom-scrollbar bg-white">
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 grid grid-cols-2 gap-2 text-xs">
+                <div><span className="text-slate-400 block text-[10px]">Indent No</span><span className="font-bold">{selectedIndent.indent_no}</span></div>
+                <div><span className="text-slate-400 block text-[10px]">Post</span><span className="font-bold">{selectedIndent.post}</span></div>
               </div>
 
-              {/* Add after the Social Site Types div closes */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-slate-700 text-xs">Job Agency Status:</label>
+                  <select
+                    value={formData.agencyStatus}
+                    onChange={(e) => setFormData((p) => ({ ...p, agencyStatus: e.target.value }))}
+                    className="px-2.5 py-1 bg-white border border-slate-200 rounded-lg text-xs font-bold text-indigo-700"
+                  >
+                    <option value="Yes">Yes (Done)</option>
+                    <option value="No">No</option>
+                    <option value="Hold">Hold</option>
+                  </select>
+                </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Job Consultancy Name
-                </label>
-                <div className="space-y-4 max-h-80 overflow-y-auto border border-gray-300 rounded-md p-3">
-                  {consultancyOptions.length > 0 ? (
-                    consultancyOptions.map((option) => (
-                      <div key={option} className="space-y-2 border-b border-gray-100 pb-3 last:border-0">
-                        <div className="flex items-center">
-                          <input
-                            type="checkbox"
-                            id={`consultancy-${option}`}
-                            value={option}
-                            checked={formData.jobConsultancyNames.includes(option)}
-                            onChange={() => handleConsultancyChange(option)}
-                            className="h-4 w-4 text-navy focus:ring-navy border-gray-300 rounded"
-                          />
-                          <label
-                            htmlFor={`consultancy-${option}`}
-                            className="ml-2 block text-sm font-medium text-gray-700"
-                          >
-                            {option}
-                          </label>
-                        </div>
-
-                        {formData.jobConsultancyNames.includes(option) && (
-                          <div className="ml-6 grid grid-cols-1 gap-2 border-l-2 border-navy/20 pl-3">
-                            <div>
-                              <label className="block text-xs font-medium text-gray-500 mb-1">
-                                Contact person name
-                              </label>
-                              <input
-                                type="text"
-                                value={formData.consultancyContacts[option]?.contactPerson || ""}
-                                onChange={(e) => handleContactInfoChange(option, "contactPerson", e.target.value)}
-                                className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-navy"
-                                placeholder="Contact name"
-                                required
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-500 mb-1">
-                                Contact number
-                              </label>
-                              <input
-                                type="text"
-                                value={formData.consultancyContacts[option]?.contactNumber || ""}
-                                onChange={(e) => handleContactInfoChange(option, "contactNumber", e.target.value)}
-                                className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-navy"
-                                placeholder="Contact number"
-                                required
-                              />
-                            </div>
+                <label className="font-semibold text-slate-700 text-xs block">Select Consultancies</label>
+                <div className="space-y-2 max-h-56 overflow-y-auto p-2 bg-white rounded-xl border border-slate-200 custom-scrollbar">
+                  {consultancyList.map((agencyName) => {
+                    const isChecked = formData.jobConsultancyNames.includes(agencyName);
+                    return (
+                      <div key={agencyName} className={`p-2.5 rounded-xl border ${isChecked ? "bg-indigo-50/70 border-indigo-200" : "border-slate-100"}`}>
+                        <label className="flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer">
+                          <input type="checkbox" checked={isChecked} onChange={() => handleConsultancyToggle(agencyName)} className="rounded text-indigo-600" />
+                          <span>{agencyName}</span>
+                        </label>
+                        {isChecked && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-2 border-t border-indigo-100">
+                            <input
+                              type="text"
+                              placeholder="Contact Person Name"
+                              value={formData.consultancyContacts[agencyName]?.contactPerson || ""}
+                              onChange={(e) => handleContactFieldChange(agencyName, "contactPerson", e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Contact Number"
+                              value={formData.consultancyContacts[agencyName]?.contactNumber || ""}
+                              onChange={(e) => handleContactFieldChange(agencyName, "contactNumber", e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs"
+                            />
                           </div>
                         )}
                       </div>
-                    ))
-                  ) : (
-                    <p className="text-sm text-gray-500 italic">No consultancies found</p>
-                  )}
+                    );
+                  })}
                 </div>
               </div>
 
-
-
-              {/* WhatsApp field removed as per user request */}
-
-              <div className="flex justify-end space-x-2 pt-4">
-                <button
-                  type="button"
-                  onClick={handleCancel}
-                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-all duration-200"
-                  disabled={submitting}
-                >
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+                <button type="button" onClick={() => setShowModal(false)} className="px-5 py-2 rounded-xl border border-slate-200 text-slate-700 font-bold text-xs">
                   Cancel
                 </button>
-
-
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-navy text-white rounded-md hover:bg-navy-dark transition-all duration-200 flex items-center justify-center disabled:bg-gray-400 disabled:cursor-not-allowed"
-                  disabled={submitting || fileUploading}
-                >
-                  {submitting ? (
-                    <>
-                      <svg
-                        className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                        ></circle>
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
-                      Processing...
-                    </>
-                  ) : fileUploading ? (
-                    <>
-                      <svg
-                        className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                        ></circle>
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
-                      Uploading file...
-                    </>
-                  ) : (
-                    "Submit"
-                  )}
+                <button type="submit" disabled={submitting} className="px-6 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md flex items-center gap-2">
+                  <Check className="w-4 h-4" />
+                  <span>{submitting ? "Submitting..." : "Submit"}</span>
                 </button>
               </div>
             </form>
-          </div >
-        </div >
+          </div>
+        </div>
       )}
-      {/* Filter and Search */}
-      <div className="bg-white p-4 rounded-lg shadow space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div className="relative flex-1 max-w-md">
-            <input
-              type="text"
-              placeholder="Search by post, indent, etc..."
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-navy focus:border-navy bg-gray-50 text-sm"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            <Search
-              size={20}
-              className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"
-            />
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="space-y-1">
-              {/* <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Department</label> */}
-              <select
-                value={deptFilter}
-                onChange={(e) => setDeptFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-navy focus:border-navy bg-gray-50 text-sm"
-              >
-                <option value="">All Departments</option>
-                {departments.map(dept => (
-                  <option key={dept} value={dept}>{dept}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              {/* <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Post</label> */}
-              <select
-                value={desigFilter}
-                onChange={(e) => setDesigFilter(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-navy focus:border-navy bg-gray-50 text-sm"
-              >
-                <option value="">All Posts</option>
-                {posts.map(post => (
-                  <option key={post} value={post}>{post}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex items-end">
-              <button
-                onClick={() => {
-                  setSearchTerm("");
-                  setDeptFilter("");
-                  setDesigFilter("");
-                }}
-                className="text-sm text-navy hover:text-indigo-800 font-medium flex items-center gap-1 mb-2"
-              >
-                <X size={14} /> Clear Filters
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white shadow-lg rounded-lg overflow-hidden">
-        <div className="border-b border-gray-300 border-opacity-20">
-          <nav className="flex -mb-px">
-            <button
-              className={`py-4 px-6 font-medium text-sm border-b-2 ${activeTab === "pending"
-                ? "border-indigo-500 text-navy"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-                }`}
-              onClick={() => setActiveTab("pending")}
-            >
-              <Clock size={16} className="inline mr-2" />
-              Pending ({filteredPendingData.length})
-            </button>
-            <button
-              className={`py-4 px-6 font-medium text-sm border-b-2 ${activeTab === "history"
-                ? "border-indigo-500 text-navy"
-                : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-                }`}
-              onClick={() => setActiveTab("history")}
-            >
-              <CheckCircle size={16} className="inline mr-2" />
-              History ({filteredHistoryData.length})
-            </button>
-          </nav>
-        </div>
-
-        <div className="p-6">
-          {activeTab === "pending" && (
-            <div className="overflow-x-auto">
-              {/* Add max-height and overflow-y to the table container */}
-              <div className="max-h-[calc(100vh-300px)] overflow-y-auto">
-                <table className="min-w-full divide-y divide-gray-200 shadow">
-                  <thead className="bg-gray-50 sticky top-0 z-10">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Action
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Indent Number
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Post
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gender
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Department
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Prefer
-                      </th>
-
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Completion Date
-                      </th>
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Salary
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Office Timing
-                      </th>
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Residence
-                      </th>
-                      {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Closed By
-                      </th> */}
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Indenter Name
-                      </th>
-                      {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Site Status
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Social Site Types
-                      </th> */}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 bg-white">
-                    {tableLoading ? (
-                      <tr>
-                        <td colSpan="7" className="px-6 py-12 text-center">
-                          <div className="flex justify-center flex-col items-center">
-                            <div className="w-6 h-6 border-4 border-blue-500 border-dashed rounded-full animate-spin mb-2"></div>
-                            <span className="text-gray-600 text-sm">
-                              Loading indent data...
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : filteredPendingData.length === 0 ? (
-                      <tr>
-                        <td colSpan="7" className="px-6 py-12 text-center">
-                          <p className="text-gray-500">No indent data found.</p>
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredPendingData.map((item, index) => (
-                        <tr key={index} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <button
-                              onClick={() => handlePostClick(item)}
-                              className="px-3 py-1 bg-navy text-white rounded hover:bg-navy-dark"
-                            >
-                              Post
-                            </button>
-                          </td>
-
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            {item.indentNumber}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.post}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.gender}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.department}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.prefer}
-                          </td>
-
-
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            <div className="text-sm text-gray-900 break-words">
-                              {item.completionDate
-                                ? (() => {
-                                  const date = new Date(item.completionDate);
-                                  if (!date || isNaN(date.getTime()))
-                                    return "Invalid date";
-                                  const day = date
-                                    .getDate()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const month = (date.getMonth() + 1)
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const year = date.getFullYear();
-                                  const hours = date
-                                    .getHours()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const minutes = date
-                                    .getMinutes()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const seconds = date
-                                    .getSeconds()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  return (
-                                    <div>
-                                      <div className="font-medium break-words">
-                                        {`${day}/${month}/${year}`}
-                                      </div>
-                                      <div className="text-xs text-gray-500 break-words">
-                                        {`${hours}:${minutes}:${seconds}`}
-                                      </div>
-                                    </div>
-                                  );
-                                })()
-                                : "—"}
-                            </div>
-                          </td>
-
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.salary}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.officeTiming}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.residence}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.indenterName}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "history" && (
-            <div className="overflow-x-auto">
-              {/* Add max-height and overflow-y to the table container */}
-              <div className="max-h-[calc(100vh-300px)] overflow-y-auto">
-                <table className="min-w-full divide-y divide-gray-200 shadow">
-                  <thead className="bg-gray-50 sticky top-0 z-10">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Indent Number
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Post
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gender
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Department
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Prefer
-                      </th>
-
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Completion Date
-                      </th>
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Salary
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Office Timing
-                      </th>
-
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Residence
-                      </th>
-                      {/* <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Closed By
-                      </th> */}
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Indenter Name
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                        Job Consultancy
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                        Contact Person
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                        Contact No
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                        Status
-                      </th>
-
-
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200 bg-white">
-                    {tableLoading ? (
-                      <tr>
-                        <td colSpan="7" className="px-6 py-12 text-center">
-                          <div className="flex justify-center flex-col items-center">
-                            <div className="w-6 h-6 border-4 border-blue-500 border-dashed rounded-full animate-spin mb-2"></div>
-                            <span className="text-gray-600 text-sm">
-                              Loading indent data...
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : filteredHistoryData.length === 0 ? (
-                      <tr>
-                        <td colSpan="7" className="px-6 py-12 text-center">
-                          <p className="text-gray-500">No indent data found.</p>
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredHistoryData.map((item, index) => (
-                        <tr key={index} className="hover:bg-gray-50">
-
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            {item.indentNumber}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.post}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.gender}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.department}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.prefer}
-                          </td>
-
-
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            <div className="text-sm text-gray-900 break-words">
-                              {item.completionDate
-                                ? (() => {
-                                  const date = new Date(item.completionDate);
-                                  if (!date || isNaN(date.getTime()))
-                                    return "Invalid date";
-                                  const day = date
-                                    .getDate()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const month = (date.getMonth() + 1)
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const year = date.getFullYear();
-                                  const hours = date
-                                    .getHours()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const minutes = date
-                                    .getMinutes()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  const seconds = date
-                                    .getSeconds()
-                                    .toString()
-                                    .padStart(2, "0");
-                                  return (
-                                    <div>
-                                      <div className="font-medium break-words">
-                                        {`${day}/${month}/${year}`}
-                                      </div>
-                                      <div className="text-xs text-gray-500 break-words">
-                                        {`${hours}:${minutes}:${seconds}`}
-                                      </div>
-                                    </div>
-                                  );
-                                })()
-                                : "—"}
-                            </div>
-                          </td>
-
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.salary}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.officeTiming}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.residence}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                            {item.indenterName}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-gray-500">
-                            {item.jobConsultancyDR}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-gray-500">
-                            {item.contactPersonDR}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-gray-500">
-                            {item.contactNumberDR}
-                          </td>
-                          <td className="px-6 py-4 text-sm text-gray-500">
-                            {item.statusDR}
-                          </td>
-
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div >
+    </div>
   );
 };
 

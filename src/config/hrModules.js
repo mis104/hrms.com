@@ -99,6 +99,15 @@ export const adminNavigationItems = [
       { path: "/outstation-master", label: "Outstation Master" },
     ],
   },
+  {
+    type: "dropdown",
+    icon: "Settings",
+    label: "Settings",
+    items: [
+      { path: "/whatsapp-service", label: "WhatsApp Service", aliases: ["Whatsapp Service", "WhatsApp Settings", "Whatsapp Settings"] },
+      { path: "/hod-master", label: "HOD Master", aliases: ["HOD Master", "Hod Master", "Approver Settings", "HOD Settings"] },
+    ],
+  },
 ];
 
 export const employeeNavigationItems = [

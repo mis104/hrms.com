@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
+import { supabase } from '../services/supabaseClient';
 
-const NOTIFICATION_CACHE_KEY = 'hrms_notifications_cache_v1';
+const NOTIFICATION_CACHE_KEY = 'hrms_notifications_cache_v2';
 const NOTIFICATION_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEEN_FEED_IDS_KEY = 'hrms_seen_feed_notification_ids_v1';
 const READ_NOTIFICATION_IDS_KEY = 'hrms_read_notification_ids_v1';
-const REFRESH_INTERVAL_MS = 30000;
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const normalize = (value) => (value || '').toString().trim();
 
@@ -140,6 +141,59 @@ const getHeaderIndex = (headers, names, fallbackIndex = -1) => {
 const buildJoiningNotifications = (rawRows) => {
   if (!Array.isArray(rawRows)) return [];
 
+  const today = new Date();
+  const todayKey = today.toLocaleDateString('en-CA');
+
+  // Support Supabase objects
+  if (rawRows.length > 0 && typeof rawRows[0] === 'object' && !Array.isArray(rawRows[0])) {
+    return rawRows.flatMap((row) => {
+      const name = normalize(row.name_as_per_aadhar || row.candidate_name);
+      if (!name) return [];
+
+      const employeeId = normalize(row.employee_code || row.indent_no || row.id);
+      const photo = row.candidate_photo || row.photo || '';
+      const designation = row.designation || '';
+      const department = row.department || '';
+      const notifications = [];
+
+      const dobVal = row.dob_as_per_aadhar || row.date_of_birth || row.dob;
+      if (dobVal) {
+        const birthdayDate = parseSheetDate(dobVal);
+        if (isSameMonthDay(birthdayDate, today)) {
+          notifications.push({
+            id: `birthday-${employeeId || name}-${todayKey}`,
+            type: 'birthday',
+            title: `${name}'s birthday today`,
+            message: designation ? `${designation}${department ? ` - ${department}` : ''}` : 'Send birthday wishes today.',
+            dateLabel: birthdayDate ? formatDisplayDate(birthdayDate) : '',
+            photo,
+            priority: 1,
+          });
+        }
+      }
+
+      const joiningVal = row.date_of_joining || row.joining_date;
+      if (joiningVal) {
+        const joiningDate = parseSheetDate(joiningVal);
+        if (isSameMonthDay(joiningDate, today) && joiningDate.getFullYear() < today.getFullYear()) {
+          const years = today.getFullYear() - joiningDate.getFullYear();
+          notifications.push({
+            id: `joining-anniversary-${employeeId || name}-${todayKey}`,
+            type: 'joining-anniversary',
+            title: `${name}'s joining anniversary`,
+            message: `${years} ${years === 1 ? 'year' : 'years'} completed${designation ? ` - ${designation}` : ''}`,
+            dateLabel: joiningDate ? formatDisplayDate(joiningDate) : '',
+            photo,
+            priority: 2,
+          });
+        }
+      }
+
+      return notifications;
+    });
+  }
+
+  // Fallback for raw Google Sheet 2D array
   const { headerRowIndex, headers } = findJoiningHeader(rawRows);
   const rows = rawRows.slice(headerRowIndex + 1);
   const idxName = getHeaderIndex(headers, ['Name As Per Aadhar', 'Candidate Name', 'Candiate Name'], 10);
@@ -149,8 +203,6 @@ const buildJoiningNotifications = (rawRows) => {
   const idxDesignation = getHeaderIndex(headers, ['Designation'], 14);
   const idxDept = getHeaderIndex(headers, ['Department'], 2);
   const idxEmployeeId = getHeaderIndex(headers, ['Joining ID', 'Indent Number', 'Employee ID'], 5);
-  const today = new Date();
-  const todayKey = today.toLocaleDateString('en-CA');
 
   return rows.flatMap((row) => {
     const name = normalize(row[idxName]);
@@ -198,8 +250,39 @@ const buildJoiningNotifications = (rawRows) => {
 };
 
 const buildFeedNotifications = (rawRows) => {
-  if (!Array.isArray(rawRows) || rawRows.length <= 1) return [];
+  if (!Array.isArray(rawRows) || rawRows.length === 0) return [];
 
+  // Support Supabase objects
+  if (typeof rawRows[0] === 'object' && !Array.isArray(rawRows[0])) {
+    return rawRows.map((item, index) => {
+      const date = item.date || '';
+      const image = item.image || '';
+      const sms = item.sms || '';
+      const smsType = item.sms_type || 'Feed';
+      const name = item.name || '';
+      const designation = item.designation || '';
+      const parsedDate = parseSheetDate(date);
+      const stableText = [date, smsType, name, sms].map(normalize).join('|');
+
+      const id = item.id ? `feed-${item.id}` : `feed-${index + 1}-${stableText}`;
+
+      return {
+        id,
+        type: 'feed',
+        title: `${smsType} feed uploaded`,
+        message: name ? `${name}: ${sms || designation || 'New update uploaded.'}` : sms || 'New feed update uploaded.',
+        dateLabel: parsedDate ? formatDisplayDate(parsedDate) : normalize(date),
+        photo: image,
+        priority: 3,
+        targetPath: `/employee-mobile?feed=${encodeURIComponent(id)}`,
+      };
+    })
+      .filter((item) => item.message || item.photo)
+      .slice(0, 10);
+  }
+
+  // Fallback for raw Google Sheet 2D array
+  if (rawRows.length <= 1) return [];
   return rawRows.slice(1).map((row, index) => {
     const date = row[0] || '';
     const image = row[1] || '';
@@ -286,30 +369,15 @@ export const useHrmsNotifications = ({ enabled = true, showToast = false } = {})
 
       try {
         if (!silent) setNotificationsLoading(true);
-        const cacheBuster = `&_=${Date.now()}`;
-        const [joiningResponse, feedResponse] = await Promise.all([
-          fetch(`${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS${cacheBuster}`, { cache: 'no-store' }),
-          fetch(`${import.meta.env.VITE_GOOGLE_SHEET_URL}?action=fetch&sheet=${encodeURIComponent('Onboard and Status')}${cacheBuster}`, { cache: 'no-store' }),
+
+        const [sbJoiningRes, sbFeedRes] = await Promise.allSettled([
+          supabase.from('joining_fms').select('id, employee_code, candidate_name, name_as_per_aadhar, dob_as_per_aadhar, date_of_joining, candidate_photo, designation'),
+          supabase.from('onboard_and_status').select('id, date, image, sms, sms_type, name, designation').order('id', { ascending: false }).limit(20)
         ]);
 
-        const [joiningText, feedText] = await Promise.all([
-          joiningResponse.text(),
-          feedResponse.text(),
-        ]);
+        let joiningRows = (sbJoiningRes.status === 'fulfilled' && sbJoiningRes.value.data) ? sbJoiningRes.value.data : [];
+        let feedRows = (sbFeedRes.status === 'fulfilled' && sbFeedRes.value.data) ? sbFeedRes.value.data : [];
 
-        let joiningJson, feedJson;
-        try {
-          joiningJson = JSON.parse(joiningText);
-          feedJson = JSON.parse(feedText);
-        } catch (parseError) {
-          // Apps Script occasionally returns an HTML error/redirect page instead
-          // of JSON under concurrent load. Skip this cycle and keep existing data.
-          if (isMounted) setNotificationsLoading(false);
-          return;
-        }
-
-        const joiningRows = joiningJson.data || joiningJson;
-        const feedRows = feedJson.data || feedJson;
         const nextNotifications = [
           ...buildJoiningNotifications(joiningRows),
           ...buildFeedNotifications(feedRows),
