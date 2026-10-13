@@ -627,16 +627,6 @@ const HodMaster = () => {
             <div className="flex items-center gap-2 flex-wrap shrink-0">
               <button
                 type="button"
-                onClick={() => setShowSqlModal(true)}
-                className="flex items-center gap-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer backdrop-blur-xs"
-                title="View Supabase SQL schema"
-              >
-                <Database size={13} className="text-teal-300" />
-                <span>SQL Setup</span>
-              </button>
-
-              <button
-                type="button"
                 onClick={handleExportExcel}
                 className="flex items-center gap-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer backdrop-blur-xs"
               >
@@ -652,28 +642,6 @@ const HodMaster = () => {
               >
                 <RefreshCw size={13} className={loading ? "animate-spin text-teal-300" : "text-teal-300"} />
                 <span>Sync</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSetAllToLeaveOnly}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 hover:text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer disabled:opacity-50"
-                title="Click to reset all current HODs to Leave Application approval only"
-              >
-                <CheckCircle2 size={13} className="text-amber-300" />
-                <span>Set to Leave Only</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleAddAdvanceConfirmationApprover}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 hover:text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer disabled:opacity-50"
-                title="Add Advance Approval Confirmation Alert (9201958125, 9321691120)"
-              >
-                <Plus size={13} className="text-emerald-300" />
-                <span>+ Add Advance Confirmation (9201958125, 9321691120)</span>
               </button>
 
               <button

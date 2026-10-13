@@ -28,6 +28,32 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
   const employeeName =
     user.Name || user.name || user.displayName || user.Username || 'Employee';
 
+  const [employeeDept, setEmployeeDept] = useState(
+    user.department || user.Department || user.joining_place || user.designation || ''
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchDept = async () => {
+      if (!employeeName || employeeName === 'Employee') return;
+      try {
+        const { data } = await supabase
+          .from('joining_fms')
+          .select('joining_place, designation')
+          .or(`candidate_name.ilike.%${employeeName}%,name_as_per_aadhar.ilike.%${employeeName}%`)
+          .limit(1)
+          .maybeSingle();
+
+        if (isMounted && data) {
+          const detected = data.joining_place || data.designation || '';
+          if (detected) setEmployeeDept(detected);
+        }
+      } catch (e) {}
+    };
+    fetchDept();
+    return () => { isMounted = false; };
+  }, [employeeName]);
+
   const todayStr = new Date().toISOString().split('T')[0];
 
   // Form State
@@ -166,7 +192,7 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
         companyName: payload.company_name,
         remarks: payload.remarks,
         approvedLink: `${window.location.origin}/ta-da`,
-        department: "Sales Head",
+        department: employeeDept || user.department || "Sales Head",
       }).catch((err) => {
         console.warn("Advance notification dispatch notice:", err);
       });

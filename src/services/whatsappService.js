@@ -248,8 +248,9 @@ export const triggerLeaveRequestNotification = async ({
   employeeId = "EMP-001",
   designation = "Staff",
   jobLocation = "Plant Location",
-  managerName = "HR Manager",
-  managerPhone = "+919876543210",
+  department = "",
+  managerName = "HOD / Approver",
+  managerPhone = "",
   leaveType = "Casual Leave",
   fromDate = "",
   toDate = "",
@@ -260,17 +261,58 @@ export const triggerLeaveRequestNotification = async ({
   approvalLink = "",
 }) => {
   const config = await getWhatsAppConfig();
-  if (config.autoSendOnLeaveRequest === false && config.auto_send_on_leave_request === false) return;
+  if (config.autoSendOnLeaveRequest === false && config.auto_send_on_leave_request === false) return [];
 
   const baseUrl = import.meta.env.VITE_APP_URL || (typeof window !== "undefined" ? window.location.origin : "");
   const link = approvalLink || `${baseUrl}/leave-management`;
   const finalLrNo = lrNo || "LR-REQ";
+  const targetDept = (department || designation || "").trim();
+
+  // 1. Fetch configured approvers from hod_master for the specific department
+  let approvers = await getHodApproversForModule({
+    department: targetDept,
+    moduleName: "Leave Application",
+  });
+
+  // If no specific HOD found for this department, fallback to "All" or "General"
+  if (approvers.length === 0 && targetDept) {
+    approvers = await getHodApproversForModule({
+      department: "All",
+      moduleName: "Leave Application",
+    });
+  }
+
+  const recipientList = [];
+  if (approvers.length > 0) {
+    for (const hod of approvers) {
+      if (hod.send_whatsapp === false) continue;
+      const phoneRaw = hod.phone_number || hod.hod_phone;
+      if (!phoneRaw) continue;
+      const phones = String(phoneRaw)
+        .split(/[,;\/]/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      for (const p of phones) {
+        recipientList.push({ phone: p, name: hod.hod_name || managerName || "HOD / Approver" });
+      }
+    }
+  }
+
+  // Fallback to managerPhone only if no HOD was configured in hod_master
+  if (recipientList.length === 0 && managerPhone && managerPhone !== "+919876543210") {
+    recipientList.push({ phone: managerPhone, name: managerName || "HR Manager" });
+  }
+
+  if (recipientList.length === 0) {
+    console.warn(`No active HOD approver found in hod_master for department: ${targetDept}`);
+    return [];
+  }
 
   const body = `📢 *Leave Approval Request*
 
 🆔 *LR No.:* ${finalLrNo}
 👤 *Request By:* ${employeeName}
-💼 *Department:* ${designation}
+💼 *Department:* ${targetDept || designation}
 📍 *Job Location:* ${jobLocation || "Piramal Petroleum"}
 
 🗓️ *Leave Duration:* ${fromDate} ➡️ ${toDate}
@@ -288,13 +330,24 @@ ${link}
 Regards,  
 💼 *Piramal Petroleum Pvt. Ltd.*`;
 
-  return sendWhatsAppMessage({
-    to: managerPhone,
-    recipientName: managerName,
-    message: body,
-    eventType: "Leave Request",
-    templateName: "Leave Approval Request (To Manager)",
-  });
+  const results = [];
+  const uniquePhones = new Set();
+
+  for (const item of recipientList) {
+    if (uniquePhones.has(item.phone)) continue;
+    uniquePhones.add(item.phone);
+
+    const res = await sendWhatsAppMessage({
+      to: item.phone,
+      recipientName: item.name,
+      message: body,
+      eventType: "Leave Request",
+      templateName: "Leave Approval Request (To HOD)",
+    });
+    results.push({ phone: item.phone, recipient: item.name, result: res });
+  }
+
+  return results;
 };
 
 /**
@@ -436,12 +489,12 @@ export const getHodApproversForModule = async ({ department = "", moduleName = "
       } catch (e) {}
     }
 
-    // Filter by module and department
     const normDept = String(department || "").trim().toLowerCase();
-    const filtered = list.filter((hod) => {
+
+    // 1. First priority: exact department match for module
+    let matched = list.filter((hod) => {
       if (hod.status !== "Active") return false;
 
-      // Module match
       const types = Array.isArray(hod.approval_types)
         ? hod.approval_types
         : typeof hod.approval_types === "string"
@@ -453,15 +506,54 @@ export const getHodApproversForModule = async ({ department = "", moduleName = "
       );
       if (!hasModule) return false;
 
-      // Department match (All, General, or department match)
       const hodDept = String(hod.department || "").trim().toLowerCase();
-      if (!normDept || hodDept === "all" || hodDept === "general" || hodDept === "general / all") {
-        return true;
-      }
-      return hodDept === normDept || normDept.includes(hodDept) || hodDept.includes(normDept);
+      return normDept && hodDept === normDept;
     });
 
-    return filtered;
+    if (matched.length > 0) return matched;
+
+    // 2. Second priority: partial department match
+    if (normDept) {
+      matched = list.filter((hod) => {
+        if (hod.status !== "Active") return false;
+
+        const types = Array.isArray(hod.approval_types)
+          ? hod.approval_types
+          : typeof hod.approval_types === "string"
+          ? [hod.approval_types]
+          : [];
+        const hasModule = types.some((t) =>
+          t.toLowerCase().includes(moduleName.toLowerCase()) ||
+          moduleName.toLowerCase().includes(t.toLowerCase())
+        );
+        if (!hasModule) return false;
+
+        const hodDept = String(hod.department || "").trim().toLowerCase();
+        return hodDept.includes(normDept) || normDept.includes(hodDept);
+      });
+      if (matched.length > 0) return matched;
+    }
+
+    // 3. Third priority: All / General department approvers
+    matched = list.filter((hod) => {
+      if (hod.status !== "Active") return false;
+
+      const types = Array.isArray(hod.approval_types)
+        ? hod.approval_types
+        : typeof hod.approval_types === "string"
+        ? [hod.approval_types]
+        : [];
+      const hasModule = types.some((t) =>
+        t.toLowerCase().includes(moduleName.toLowerCase()) ||
+        moduleName.toLowerCase().includes(t.toLowerCase())
+      );
+      if (!hasModule) return false;
+
+      const hodDept = String(hod.department || "").trim().toLowerCase();
+      return !normDept || hodDept === "all" || hodDept === "general" || hodDept === "general / all";
+    });
+
+    return matched;
   } catch (err) {
     console.warn("Error fetching HOD approvers:", err);
     return [];
@@ -533,18 +625,34 @@ export const triggerAdvanceRequestNotification = async ({
   companyName = "",
   remarks = "",
   approvedLink = "",
-  department = "Sales Head",
+  department = "",
 } = {}) => {
   const config = await getWhatsAppConfig();
   if (config.isEnabled === false && config.is_enabled === false) return [];
 
-  // 1. Fetch configured approvers from hod_master
-  const approvers = await getHodApproversForModule({
-    department,
-    moduleName: "Advance Request",
-  });
+  // 1. Fetch configured approvers from hod_master for department
+  const targetDept = (department || "").trim();
+  let approvers = targetDept
+    ? await getHodApproversForModule({
+        department: targetDept,
+        moduleName: "Advance Request",
+      })
+    : [];
 
-  // Default numbers requested by user
+  // Fallback to "Sales Head" or "All" from hod_master if no approver for target department
+  if (approvers.length === 0) {
+    approvers = await getHodApproversForModule({
+      department: "Sales Head",
+      moduleName: "Advance Request",
+    });
+  }
+  if (approvers.length === 0) {
+    approvers = await getHodApproversForModule({
+      department: "All",
+      moduleName: "Advance Request",
+    });
+  }
+
   const defaultNumbers = ["9201958125", "8982944569", "9201959189"];
   const recipientList = [];
 
@@ -558,24 +666,30 @@ export const triggerAdvanceRequestNotification = async ({
         .map((p) => p.trim())
         .filter(Boolean);
       for (const p of phones) {
-        recipientList.push({ phone: p, name: hod.hod_name || "Neha Garg" });
+        recipientList.push({ phone: p, name: hod.hod_name || "Approver" });
       }
     }
   }
 
-  // Fallback to default numbers if none configured
+  // Fallback to default numbers only if none configured
   if (recipientList.length === 0) {
     defaultNumbers.forEach((p) => {
-      recipientList.push({ phone: p, name: "Neha Garg" });
+      recipientList.push({ phone: p, name: "Approver" });
     });
   }
 
   const link = approvedLink || `${window.location.origin}/ta-da`;
 
-  // The exact template requested by user:
-  const messageBody = `🔔 *ADVANCE REQUEST ALERT*
+  const results = [];
+  const uniquePhones = new Set();
 
-Dear Neha Garg 👋😊,
+  for (const item of recipientList) {
+    if (uniquePhones.has(item.phone)) continue;
+    uniquePhones.add(item.phone);
+
+    const messageBody = `🔔 *ADVANCE REQUEST ALERT*
+
+Dear ${item.name || "HOD Approver"} 👋😊,
 
 📅✨A new advance request has been submitted:✨📅
 
@@ -590,9 +704,9 @@ Dear Neha Garg 👋😊,
 🗓️ *End Date:* ${endDate || "N/A"}
 
 💰 *Advance:* ₹${advance || "0"}
-🏢 *Compnay Name:* ${companyName || "Piramal Petroleum"}
+🏢 *Company Name:* ${companyName || "Piramal Petroleum"}
 
-📝 *Reamakrs:* ${remarks || "N/A"}
+📝 *Remarks:* ${remarks || "N/A"}
 
 🔗 *LINK:* ${link}
 
@@ -600,13 +714,6 @@ Dear Neha Garg 👋😊,
 
 🙏🤝Best regards,
 🏢 Piramal Petroleum Pvt. Ltd.`;
-
-  const results = [];
-  const uniquePhones = new Set();
-
-  for (const item of recipientList) {
-    if (uniquePhones.has(item.phone)) continue;
-    uniquePhones.add(item.phone);
 
     const res = await sendWhatsAppMessage({
       to: item.phone,
