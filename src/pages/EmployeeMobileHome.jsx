@@ -41,9 +41,6 @@ import LocalTravel from './LocalTravel';
 import OutstationTravel from './OutstationTravel';
 import AdvanceRequest from './AdvanceRequest';
 
-const ATTENDANCE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx_GRdhFbP5zQX_HV72t9Ofcj5IHurSBJnPC5o0yr6_HvkLkMs9hOSLHIP0e26uG1iDlA/exec';
-const ATTENDANCE_SHEET_NAME = 'Data';
-const OUTSTATION_SCRIPT_URL = import.meta.env.VITE_OUTSTATION_SHEET_URL;
 const FEED_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const FEED_CACHE_KEY = 'employee_mobile_feed_cache_v2';
 const FEED_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -176,11 +173,11 @@ const buildOutstationAttendanceRows = (rawAttendance = []) => {
   const grouped = {};
 
   rawAttendance.forEach((entry) => {
-    const employeeName = normalize(entry.personName || entry.employeeName || entry.name);
+    const employeeName = normalize(entry.personName || entry.person_name || entry.employeeName || entry.name);
     if (!employeeName) return;
 
     const status = entry.inDate ? 'IN' : entry.outDate ? 'OUT' : normalize(entry.status).toUpperCase();
-    const dateValue = entry.inDate || entry.outDate || entry.dateTime || entry.timestamp || entry.date || entry.time;
+    const dateValue = entry.inDate || entry.outDate || entry.dateTime || entry.date_and_time || entry.timestampe || entry.timestamp || entry.date || entry.time;
     const dateObj = parseAttendanceDate(dateValue);
     if (!dateObj) return;
 
@@ -199,16 +196,23 @@ const buildOutstationAttendanceRows = (rawAttendance = []) => {
       };
     }
 
+    const timeValue = entry.time || dateValue;
+    const timeStr = formatAttendanceTimeValue(timeValue);
+
     if (status === 'IN') {
-      grouped[key].inTime = formatAttendanceTimeValue(dateValue);
+      if (!grouped[key].inTime || timeStr < grouped[key].inTime) {
+        grouped[key].inTime = timeStr;
+      }
     }
 
     if (status === 'OUT') {
-      grouped[key].outTime = formatAttendanceTimeValue(dateValue);
+      if (!grouped[key].outTime || timeStr > grouped[key].outTime) {
+        grouped[key].outTime = timeStr;
+      }
     }
 
     if (!grouped[key].status) {
-      grouped[key].status = grouped[key].inTime || grouped[key].outTime ? 'PRESENT' : status;
+      grouped[key].status = grouped[key].inTime || grouped[key].outTime ? 'PRESENT' : (status || 'PRESENT');
     }
   });
 
@@ -438,37 +442,33 @@ const EmployeeMobileHome = () => {
   const fetchContacts = async ({ silent = false } = {}) => {
     try {
       if (!silent) setContactsLoading(true);
-      const url = `https://docs.google.com/spreadsheets/d/1WTT8ZQhtf1yeSChNn2uJeW5Tz2TvYjQLrxhTx5l4Fgw/gviz/tq?tqx=out:json&sheet=All%20Contact&cb=${Date.now()}`;
-      const response = await fetch(url);
-      const text = await response.text();
-      const jsonStart = text.indexOf("{");
-      const jsonEnd = text.lastIndexOf("}");
-      if (jsonStart === -1 || jsonEnd === -1) throw new Error("Invalid response");
-      const payload = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-      
-      const parsedContacts = (payload.table?.rows || [])
-        .map((row) => {
-          const cells = row.c || [];
-          const getVal = (idx) => {
-            const cell = cells[idx];
-            return cell ? (cell.f ?? cell.v ?? "").toString().trim() : "";
-          };
-          return {
-            id: getVal(0),
-            name: getVal(1),
-            designation: getVal(2),
-            department: getVal(3),
-            mobileNo: getVal(4),
-            photo: "",
-          };
+      const { data, error } = await supabase
+        .from('joining_fms')
+        .select('id, employee_code, candidate_name, name_as_per_aadhar, designation, joining_place, mobile_no, candidate_photo, leave')
+        .order('candidate_name', { ascending: true });
+
+      if (error) throw error;
+
+      const parsedContacts = (data || [])
+        .filter((row) => {
+          const isLeaving = (row.leave || '').trim().toLowerCase() === 'yes';
+          const name = (row.candidate_name || row.name_as_per_aadhar || '').trim();
+          return !isLeaving && name && name.toLowerCase() !== 'employee name';
         })
-        .filter((contact) => contact.name && contact.name.toLowerCase() !== "employee name")
+        .map((row) => ({
+          id: row.employee_code || String(row.id),
+          name: (row.candidate_name || row.name_as_per_aadhar || '').trim(),
+          designation: (row.designation || '').trim(),
+          department: (row.joining_place || '').trim(),
+          mobileNo: (row.mobile_no || '').trim(),
+          photo: (row.candidate_photo || '').trim(),
+        }))
         .sort((a, b) => a.name.localeCompare(b.name));
-      
+
       setContacts(parsedContacts);
       writeCachedList(CONTACTS_CACHE_KEY, parsedContacts);
     } catch (error) {
-      console.error('Employee contacts fetch failed:', error);
+      console.error('Employee contacts fetch from Supabase failed:', error);
       if (!silent) toast.error('Failed to load contacts');
     } finally {
       if (!silent) setContactsLoading(false);
@@ -521,21 +521,16 @@ const EmployeeMobileHome = () => {
       if (!cloudinaryData.secure_url) throw new Error("Upload failed");
       const newPicUrl = cloudinaryData.secure_url;
 
-      if (user?.rowIndex) {
-        const payload = {
-          sheetName: "USER",
-          action: "updateCell",
-          rowIndex: user.rowIndex,
-          columnIndex: 13,
-          value: newPicUrl
-        };
-        const sheetRes = await fetch(import.meta.env.VITE_GOOGLE_SHEET_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams(payload).toString()
-        });
-        const sheetData = await sheetRes.json();
-        if (!sheetData.success) throw new Error("Failed to save to sheet");
+      // Update profile picture in Supabase users table
+      if (user?.id) {
+        await supabase.from("users").update({ profile: newPicUrl }).eq("id", user.id);
+      } else if (user?.username || user?.Username) {
+        await supabase.from("users").update({ profile: newPicUrl }).ilike("username", (user.username || user.Username).trim());
+      }
+
+      // Also update in joining_fms if matching candidate_name
+      if (employeeName && employeeName !== 'Employee') {
+        await supabase.from("joining_fms").update({ candidate_photo: newPicUrl }).ilike("candidate_name", employeeName.trim());
       }
 
       setProfilePic(newPicUrl);
@@ -624,62 +619,41 @@ const EmployeeMobileHome = () => {
   useEffect(() => {
     let isMounted = true;
 
-    const fetchLegacyAttendanceData = async () => {
-      const response = await fetch(
-        `${ATTENDANCE_SCRIPT_URL}?sheet=${encodeURIComponent(ATTENDANCE_SHEET_NAME)}&action=fetch&range=A:F`
-      );
-      const result = await response.json();
-      const rawData = result.data || result;
-
-      if (!Array.isArray(rawData)) return [];
-
-      const headers = rawData[0] || [];
-      const rows = rawData.slice(1);
-      const getIndex = (headerName) =>
-        headers.findIndex((header) => normalize(header).toLowerCase() === headerName.toLowerCase());
-
-      return rows.map((row) => ({
-        date: row[getIndex('Date')] || '',
-        employeeName: row[getIndex('Employee Name')] || '',
-        inTime: row[getIndex('In Time')] || '',
-        outTime: row[getIndex('Out Time')] || '',
-        status: row[getIndex('Status')] || '',
-        month: row[getIndex('Month')] || '',
-      })).filter((item) => item.date || item.employeeName || item.status);
-    };
-
     const fetchAttendanceData = async () => {
       try {
-        let processedRows = [];
+        let query = supabase
+          .from('attendance')
+          .select('id, person_name, date_and_time, timestampe, date, time, status, month_name, year_name')
+          .order('id', { ascending: false });
 
-        if (OUTSTATION_SCRIPT_URL) {
-          const response = await fetch(`${OUTSTATION_SCRIPT_URL}?action=getAllData&ts=${Date.now()}`, {
-            cache: 'no-store',
-          });
-          if (!response.ok) throw new Error(`Outstation attendance HTTP error! status: ${response.status}`);
-          const result = await response.json();
-          if (result.status !== 'success') throw new Error(result.message || 'Outstation attendance fetch failed');
-          processedRows = buildOutstationAttendanceRows(result.attendance || []);
+        if (employeeName && employeeName !== 'Employee') {
+          query = query.ilike('person_name', `%${employeeName.trim()}%`);
+        } else {
+          query = query.limit(500);
         }
 
-        if (!processedRows.length) {
-          processedRows = await fetchLegacyAttendanceData();
+        const { data: supaRows, error } = await query;
+        if (error) throw error;
+
+        let rawRows = supaRows || [];
+
+        // If specific employee name returned nothing (e.g. name format variation), fetch latest rows to match
+        if (rawRows.length === 0 && employeeName && employeeName !== 'Employee') {
+          const fallbackRes = await supabase
+            .from('attendance')
+            .select('id, person_name, date_and_time, timestampe, date, time, status, month_name, year_name')
+            .order('id', { ascending: false })
+            .limit(500);
+          rawRows = fallbackRes.data || [];
         }
+
+        const processedRows = buildOutstationAttendanceRows(rawRows);
 
         writeCachedList(MOBILE_ATTENDANCE_CACHE_KEY, processedRows);
         if (isMounted) React.startTransition(() => setAttendanceData(processedRows));
       } catch (error) {
-        console.error('Employee mobile attendance fetch failed:', error);
-        try {
-          const fallbackRows = await fetchLegacyAttendanceData();
-          if (fallbackRows.length) {
-            writeCachedList(MOBILE_ATTENDANCE_CACHE_KEY, fallbackRows);
-            if (isMounted) React.startTransition(() => setAttendanceData(fallbackRows));
-          }
-        } catch (fallbackError) {
-          console.error('Employee mobile legacy attendance fetch failed:', fallbackError);
-          if (isMounted) setAttendanceData((current) => (current.length ? current : []));
-        }
+        console.error('Employee mobile attendance fetch from Supabase failed:', error);
+        if (isMounted) setAttendanceData((current) => (current.length ? current : []));
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -699,7 +673,7 @@ const EmployeeMobileHome = () => {
       window.removeEventListener('focus', fetchAttendanceData);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, []);
+  }, [employeeName]);
 
   const userRows = useMemo(() => {
     const userName = normalize(employeeName).toLowerCase();

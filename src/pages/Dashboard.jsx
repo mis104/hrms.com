@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 
 import { usePendingCounts } from '../hooks/usePendingCounts';
+import { supabase } from '../services/supabaseClient';
 
 const Dashboard = () => {
   const [totalEmployee, setTotalEmployee] = useState(0);
@@ -43,8 +44,7 @@ const Dashboard = () => {
   const [leaveTypeData, setLeaveTypeData] = useState([]);
   const [departmentData, setDepartmentData] = useState([]);
 
-
-
+  const [allIndents, setAllIndents] = useState([]);
   const [indentData, setIndentData] = useState([]);
   const [filterStatus, setFilterStatus] = useState("All");
   const [selectedIndent, setSelectedIndent] = useState(null);
@@ -69,7 +69,7 @@ const Dashboard = () => {
   ];
 
   const [tableLoading, setTableLoading] = useState(false);
-  
+  const [storeLoading, setStoreLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
@@ -82,524 +82,293 @@ const Dashboard = () => {
   const parseSheetDate = (dateStr) => {
     if (!dateStr) return null;
     const str = String(dateStr).trim();
+    const isoMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (isoMatch) {
+      return new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+    }
+    const dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+    if (dmyMatch) {
+      return new Date(parseInt(dmyMatch[3], 10), parseInt(dmyMatch[2], 10) - 1, parseInt(dmyMatch[1], 10));
+    }
     const fallback = new Date(str);
     if (!isNaN(fallback.getTime())) return fallback;
-
-    const parts = str.split(/[-/]/);
-    if (parts.length === 3) {
-      const p1 = parseInt(parts[0], 10);
-      const p2 = parseInt(parts[1], 10);
-      const p3 = parseInt(parts[2], 10);
-      if (p3 > 1000) {
-        // Assume DD/MM/YYYY
-        return new Date(p3, p2 - 1, p1);
-      }
-    }
     return null;
   };
 
-  const [globalFmsData, setGlobalFmsData] = useState([]);
-  const [joiningEntryData, setJoiningEntryData] = useState([]);
-  const [candidateSelectionData, setCandidateSelectionData] = useState([]); // Unused but kept for compatibility
-  const [globalLeavingData, setGlobalLeavingData] = useState([]); // Unused/Empty in store
-  const [leaveManagementData, setLeaveManagementData] = useState([]); // Unused? Handled in effect
-  const [storeLoading, setStoreLoading] = useState(true);
-
-  // API URLs
-  const FETCH_URL = import.meta.env.VITE_GOOGLE_SHEET_URL;
-  const JOINING_SUBMIT_URL = "https://script.google.com/macros/s/AKfycbwhFgVoAB4S1cKrU0iDRtCH5B2K-ol2c0RmaaEWXGqv0bdMzs3cs3kPuqOfUAR3KHYZ7g/exec";
-
   useEffect(() => {
-    const fetchDashboardData = async () => {
-      setStoreLoading(true);
-      try {
-        const cb = `&_=${Date.now()}`;
-
-        // Parallel Fetch
-        const [fmsRes, joiningEntryRes, leavingRes] = await Promise.all([
-          fetch(`${FETCH_URL}?sheet=FMS&action=fetch${cb}`).then(res => res.json()),
-          fetch(`${JOINING_SUBMIT_URL}?action=read&sheet=JOINING ENTRY FORM${cb}`).then(res => res.json()),
-          fetch(`${import.meta.env.VITE_LEAVING_SHEET_URL}?sheet=FMS&action=fetch${cb}`).then(res => res.json().catch(() => ({ success: false })))
-        ]);
-
-        if (fmsRes.success) setGlobalFmsData(fmsRes.data);
-        if (joiningEntryRes.success) setJoiningEntryData(joiningEntryRes.data);
-        if (leavingRes && leavingRes.success) setGlobalLeavingData(leavingRes.data || leavingRes);
-
-      } catch (error) {
-        console.error("Dashboard Data Fetch Error:", error);
-      } finally {
-        setStoreLoading(false);
-      }
-    };
-
     fetchDashboardData();
   }, []);
 
+  const fetchDashboardData = async () => {
+    setStoreLoading(true);
+    setTableLoading(true);
+    try {
+      const [fmsRes, joiningRes, leavingRes, candRes] = await Promise.all([
+        supabase.from("fms").select("*").order("id", { ascending: false }),
+        supabase.from("joining_fms").select("*").order("id", { ascending: true }),
+        supabase.from("leaving_fms").select("*").order("id", { ascending: true }),
+        supabase.from("candidate_selection").select("id, indent_no, indent_and_name, candidate_id")
+      ]);
+
+      const fmsRows = fmsRes.data || [];
+      const rawJoining = joiningRes.data || [];
+      const rawLeaving = leavingRes.data || [];
+      const rawCand = candRes.data || [];
+
+      // 1. Total Indents, Open Count, Close Count
+      setTotalEmployee(fmsRows.length);
+      const open = fmsRows.filter(r => (r.position_status || '').toString().trim().toLowerCase() === 'open').length;
+      const close = fmsRows.filter(r => {
+        const s = (r.position_status || '').toString().trim().toLowerCase();
+        return s === 'close' || s === 'closed';
+      }).length;
+      setOpenCount(open);
+      setCloseCount(close);
+
+      // Map joinings and enquiries per indent
+      const joiningCountMap = {};
+      rawJoining.forEach(j => {
+        const ind = (j.indent_no || '').trim();
+        if (ind) joiningCountMap[ind] = (joiningCountMap[ind] || 0) + 1;
+      });
+
+      const enquiryCountMap = {};
+      rawCand.forEach(c => {
+        const ind = (c.indent_no || (c.indent_and_name && c.indent_and_name.split('_')[0]) || (c.candidate_id && c.candidate_id.split('_')[0]) || '').trim();
+        if (ind) enquiryCountMap[ind] = (enquiryCountMap[ind] || 0) + 1;
+      });
+
+      // 2. Indent Reporting Table Data
+      const processedIndents = fmsRows.map(row => {
+        const noOfPost = parseInt(row.number_of_post) || 0;
+        const indNo = (row.indent_no || '').trim();
+        const totaljoining = joiningCountMap[indNo] || parseInt(row.total_joining) || 0;
+        const totalenquiry = enquiryCountMap[indNo] || 0;
+        const pendingJoining = Math.max(0, noOfPost - totaljoining);
+
+        const fullDetails = [
+          { label: "Indent Number", value: row.indent_no },
+          { label: "Post", value: row.post },
+          { label: "Department", value: row.department },
+          { label: "Location", value: row.location },
+          { label: "Position Status", value: row.position_status },
+          { label: "Priority", value: row.priority },
+          { label: "Prefer", value: row.prefer },
+          { label: "Gender", value: row.gender },
+          { label: "Number of Post", value: row.number_of_post },
+          { label: "Completion Date", value: row.completion_date },
+          { label: "Indenter Name", value: row.person_name },
+          { label: "Salary", value: row.salary },
+          { label: "Office Timing", value: row.office_timing },
+          { label: "Weekly Off", value: row.types_of_weekly_off },
+          { label: "Residence", value: row.residence },
+          { label: "Required Qualifications", value: row.required_qualifications },
+          { label: "Online Platform", value: row.online_platform },
+          { label: "Job Consultancy", value: row.job_consultancy },
+          { label: "Selected Candidate", value: row.selected_candidate_name },
+          { label: "Finalized Salary", value: row.finalized_salary },
+          { label: "Created At", value: row.created_at }
+        ].filter(d => d.value !== undefined && d.value !== null && String(d.value).trim() !== "");
+
+        return {
+          id: row.id,
+          timestamp: row.timestamp || row.created_at,
+          indentNumber: row.indent_no || "-",
+          post: row.post || "-",
+          gender: row.gender || "-",
+          department: row.department || "-",
+          prefer: row.prefer || "-",
+          priority: row.priority || "-",
+          noOfPost,
+          completionDate: row.completion_date || "",
+          experience: row.required_qualifications || "",
+          salary: row.salary || "",
+          officeTiming: row.office_timing || "",
+          typeOfWeek: row.types_of_weekly_off || "",
+          residence: row.residence || "",
+          indenterName: row.person_name || "",
+          status: row.position_status || "-",
+          filterKey: row.position_status || "-",
+          totaljoining,
+          totalenquiry,
+          pendingJoining,
+          fullDetails
+        };
+      });
+
+      setAllIndents(processedIndents);
+
+      // 3. Employee Signals (Active, Joined This Month, Left, Left This Month)
+      const normalizeId = (id) => id ? id.toString().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+
+      const seenLeavingKeys = new Set();
+      const processedLeaving = [];
+      const thisMonthLeftList = [];
+      const now = new Date();
+      const currentMonth = now.getMonth();
+      const currentYear = now.getFullYear();
+
+      rawLeaving.forEach(row => {
+        const empId = row.employee_id || "";
+        const name = row.candidate_name || "";
+        const mobile = row.mobile_no || "";
+        const leavingDate = row.last_working_day || row.timestamp || "";
+        const idNorm = normalizeId(empId);
+        const uniqueKey = idNorm || (name + "-" + mobile).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+        if (uniqueKey) {
+          if (seenLeavingKeys.has(uniqueKey)) return;
+          seenLeavingKeys.add(uniqueKey);
+        }
+
+        processedLeaving.push({
+          employeeId: empId || "-",
+          name: name || "-",
+          mobileNo: mobile || "-",
+          leavingDate: leavingDate || "-"
+        });
+
+        const d = parseSheetDate(leavingDate);
+        if (d && d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+          thisMonthLeftList.push({
+            employeeId: empId || "-",
+            name: name || "-",
+            mobileNo: mobile || "-",
+            leavingDate: leavingDate || "-"
+          });
+        }
+      });
+
+      const isEmployeeLeaving = (jRow) => {
+        if ((jRow.leave || "").trim().toLowerCase() === "yes") return true;
+
+        const normCode = normalizeId(jRow.employee_code);
+        const normIndent = normalizeId(jRow.indent_no);
+        const normName = normalizeId(jRow.candidate_name);
+
+        for (const lRow of rawLeaving) {
+          const lEmpId = normalizeId(lRow.employee_id);
+          const lName = normalizeId(lRow.candidate_name);
+
+          if (normCode && normCode === lEmpId) return true;
+          if (normIndent && normIndent === lEmpId) return true;
+          if (normName && lName && (normName === lName || normName.includes(lName) || lName.includes(normName))) return true;
+        }
+        return false;
+      };
+
+      const seenJoiningKeys = new Set();
+      const activeJoining = [];
+      const thisMonthJoinedList = [];
+
+      rawJoining.forEach(row => {
+        const empCode = row.employee_code || row.indent_no || "";
+        const name = row.candidate_name || "";
+        const mobile = row.mobile_no || "";
+        const joiningDate = row.date_of_joining || row.timestamp || "";
+        const idNorm = normalizeId(empCode);
+        const uniqueKey = idNorm || (name + "-" + mobile).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+        if (uniqueKey) {
+          if (seenJoiningKeys.has(uniqueKey)) return;
+          seenJoiningKeys.add(uniqueKey);
+        }
+
+        if (!isEmployeeLeaving(row)) {
+          activeJoining.push(row);
+        }
+
+        const d = parseSheetDate(joiningDate);
+        if (d && d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+          thisMonthJoinedList.push({
+            employeeId: empCode || "-",
+            name: name || "-",
+            mobileNo: mobile || "-",
+            joiningDate: joiningDate || "-"
+          });
+        }
+      });
+
+      setActiveEmployee(activeJoining.length);
+      setLeftEmployee(processedLeaving.length);
+      setLeaveThisMonth(thisMonthLeftList.length);
+      setLeftThisMonthData(thisMonthLeftList);
+      setJoinedThisMonthData(thisMonthJoinedList);
+
+      // 4. Designation Breakdown Chart
+      const desigCounts = {};
+      activeJoining.forEach(row => {
+        const desig = (row.designation || row.lookup_designation || "").trim();
+        if (desig) {
+          desigCounts[desig] = (desigCounts[desig] || 0) + 1;
+        }
+      });
+      const sortedDesignations = Object.keys(desigCounts)
+        .map(k => ({ designation: k, employees: desigCounts[k] }))
+        .sort((a, b) => b.employees - a.employees);
+      setDesignationData(sortedDesignations);
+
+      // 5. Department Data
+      const deptCounts = {};
+      activeJoining.forEach(row => {
+        const dept = (row.department || row.joining_place || "").trim();
+        if (dept) deptCounts[dept] = (deptCounts[dept] || 0) + 1;
+      });
+      setDepartmentData(Object.keys(deptCounts).map(k => ({ department: k, employees: deptCounts[k] })));
+
+      // 6. Monthly Hiring & Leaving
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const hiringMap = {};
+      const leavingMap = {};
+      for (let i = 5; i >= 0; i--) {
+        const mIdx = (now.getMonth() - i + 12) % 12;
+        const mYear = `${months[mIdx]} ${now.getFullYear()}`;
+        hiringMap[mYear] = { hired: 0 };
+        leavingMap[mYear] = { left: 0 };
+      }
+
+      rawJoining.forEach(row => {
+        const d = parseSheetDate(row.date_of_joining);
+        if (d) {
+          const my = `${months[d.getMonth()]} ${d.getFullYear()}`;
+          if (hiringMap[my]) hiringMap[my].hired += 1;
+          else hiringMap[my] = { hired: 1 };
+        }
+      });
+
+      rawLeaving.forEach(row => {
+        const d = parseSheetDate(row.last_working_day);
+        if (d) {
+          const my = `${months[d.getMonth()]} ${d.getFullYear()}`;
+          if (leavingMap[my]) leavingMap[my].left += 1;
+          else leavingMap[my] = { left: 1 };
+        }
+      });
+
+      setMonthlyHiringData(prepareMonthlyHiringData(hiringMap, leavingMap));
+
+    } catch (err) {
+      console.error("Dashboard Supabase Fetch Error:", err);
+    } finally {
+      setStoreLoading(false);
+      setTableLoading(false);
+    }
+  };
+
   useEffect(() => {
-    setTableLoading(storeLoading);
-  }, [storeLoading]);
-
-  // Handle Leave Management Data
-  useEffect(() => {
-    if (!leaveManagementData || leaveManagementData.length < 2) return;
-    const headers = leaveManagementData[0];
-    const dataRows = leaveManagementData.slice(1);
-
-    const statusIndex = headers.findIndex(h => h && h.toString().trim().toLowerCase().includes("status"));
-    const leaveTypeIndex = headers.findIndex(h => h && h.toString().trim().toLowerCase().includes("leave type"));
-
-    const statusCounts = {};
-    const typeCounts = {};
-
-    dataRows.forEach(row => {
-      const s = row[statusIndex]?.toString().trim() || 'Unknown';
-      statusCounts[s] = (statusCounts[s] || 0) + 1;
-
-      const t = row[leaveTypeIndex]?.toString().trim() || 'Unknown';
-      typeCounts[t] = (typeCounts[t] || 0) + 1;
-    });
-
-    setLeaveStatusData(Object.keys(statusCounts).map(k => ({ status: k, count: statusCounts[k] })));
-    setLeaveTypeData(Object.keys(typeCounts).map(k => ({ type: k, count: typeCounts[k] })));
-  }, [leaveManagementData]);
-
-  // Handle FMS Data (Total Indents + Indent Table)
-  useEffect(() => {
-    if (!globalFmsData || globalFmsData.length < 10) {
-      setTotalEmployee(0);
+    if (!allIndents || allIndents.length === 0) {
       setIndentData([]);
       return;
     }
-
-    // 1. Total Indents
-    const validRows = globalFmsData.slice(9).filter(row => row[1] && row[1].toString().trim() !== "");
-    setTotalEmployee(validRows.length);
-
-    const open = validRows.filter(row => (row[1] || "").toString().trim().toLowerCase() === "open").length;
-    const close = validRows.filter(row => {
-      const s = (row[1] || "").toString().trim().toLowerCase();
-      return s === "close" || s === "closed";
-    }).length;
-    setOpenCount(open);
-    setCloseCount(close);
-
-    // 2. Indent Table Data
-    // Find Header Row (Keep dynamic logic to find valid Indices for display columns)
-    let headerRowIndex = -1;
-    for (let i = 0; i < globalFmsData.length; i++) {
-      const row = globalFmsData[i];
-      if (row && (row.includes("Position Status") || row.includes("Indent No"))) {
-        headerRowIndex = i;
-        break;
-      }
-    }
-    if (headerRowIndex === -1) headerRowIndex = 6;
-
-    const headers = globalFmsData[headerRowIndex].map(h => h ? h.trim() : "");
-
-    // SLICE 9 Logic as requested (Data starts from Row 10)
-    const dataRows = globalFmsData.slice(9);
-
-    // Calculate Pending Stage Tasks (Now handled by usePendingCounts hook)
-
-    const findIdx = (names) => headers.findIndex(h => names.some(n => h.toLowerCase().includes(n.toLowerCase())));
-
-    const timestampIndex = findIdx(["Timestamp"]);
-    const indentNumberIndex = findIdx(["Indent No", "Indent Number"]);
-    const postIndex = findIdx(["Post"]);
-    const genderIndex = findIdx(["Gender"]);
-    const departmentIndex = findIdx(["Department"]);
-    const preferIndex = findIdx(["Prefer"]);
-    const noOFPostIndex = findIdx(["Number Of Post"]);
-    const completionDateIndex = findIdx(["Completion Date"]);
-    const experienceIndex = findIdx(["Experience"]);
-    const salaryIndex = findIdx(["Salary"]);
-    const officeTimingIndex = findIdx(["Office Timing", "Timing"]);
-    const typeOfWeekIndex = findIdx(["Type Of Week", "Weekly Off"]);
-    const residenceIndex = findIdx(["Residence"]);
-    const indenterNameIndex = findIdx(["Indenter Name", "Person Name"]);
-    const statusIndex = findIdx(["Position Status", "Status"]); // For display
-    const priorityIndex = findIdx(["Priority", "Priorety"]);
-    const TotalJoiningIndex = findIdx(["Total Joining"]);
-
-    const processed = dataRows.map(row => {
-      const fullDetails = headers
-        .map((header, index) => ({
-          label: header || `Column ${index + 1}`,
-          value: row[index] ?? ""
-        }))
-        .filter((detail) => String(detail.label).trim() || String(detail.value).trim());
-
-      return {
-        timestamp: row[timestampIndex],
-        indentNumber: row[indentNumberIndex],
-        post: row[postIndex],
-        gender: row[genderIndex],
-        department: row[departmentIndex],
-        prefer: row[preferIndex],
-        priority: priorityIndex >= 0 ? row[priorityIndex] : '',
-        noOfPost: row[noOFPostIndex],
-        completionDate: row[completionDateIndex],
-        experience: row[experienceIndex],
-        salary: row[salaryIndex],
-        officeTiming: row[officeTimingIndex],
-        typeOfWeek: row[typeOfWeekIndex],
-        residence: row[residenceIndex],
-        indenterName: row[indenterNameIndex],
-        status: row[statusIndex],
-        totaljoining: row[TotalJoiningIndex],
-        fullDetails,
-        // Filter Source: Column B (Index 1)
-        filterKey: row[1]
-      };
+    const filtered = allIndents.filter((item) => {
+      if (filterStatus === "All") return true;
+      const s = (item.filterKey || "").toString().trim().toLowerCase();
+      const f = filterStatus.toLowerCase();
+      if (f === "close") return s === "close" || s === "closed";
+      return s === f;
     });
-
-    // Filter based on filterStatus state ("Open", "Close", or "All")
-    // Column B (Index 1) check
-    const filteredIndents = processed.filter(item => {
-      const itemStatus = (item.filterKey || "").toString().trim().toLowerCase();
-      if (filterStatus === "All") {
-        return true;
-      }
-
-      const filterLower = filterStatus.toLowerCase();
-
-      // Handle "Close" matching "Closed" or "Close"
-      if (filterLower === "close") {
-        return itemStatus === "close" || itemStatus === "closed";
-      }
-
-      return itemStatus === filterLower;
-    });
-
-    const finalData = filteredIndents.map(item => {
-      const noOfPost = parseInt(item.noOfPost) || 0;
-      const totalJoining = parseInt(item.totaljoining) || 0;
-      return {
-        ...item,
-        pendingJoining: Math.max(0, noOfPost - totalJoining)
-      };
-    });
-    setIndentData(finalData);
-
-  }, [globalFmsData, filterStatus]);
-
-  // Handle Joining Entry Data (Active Count, Monthly Hiring, Department Data)
-  useEffect(() => {
-    if (!joiningEntryData || joiningEntryData.length < 6) {
-      setActiveEmployee(0);
-      setDepartmentData([]);
-      return;
-    }
-
-    const headers = joiningEntryData[5] || [];
-    const dataRows = joiningEntryData.length > 6 ? joiningEntryData.slice(6) : [];
-
-    // Indices
-    const statusIndex = headers.findIndex(h => h && h.toString().trim().toLowerCase() === "status");
-    const dateOfJoiningIndex = headers.findIndex(h => h && h.toString().trim().toLowerCase().includes("date of joining"));
-    const designationIndex = headers.findIndex(h => h && h.toString().trim().toLowerCase() === "designation");
-    // Department is column U (index 20) hardcoded in original
-    const departmentIndex = 20;
-
-    // Additional Indices for Joined This Month
-    const idxIndent = headers.findIndex(h => h && h.toString().trim().toLowerCase() === "indent number");
-    const idxName = headers.findIndex(h => h && h.toString().trim().toLowerCase() === "candidate name");
-    const idxMobile = headers.findIndex(h => h && h.toString().trim().toLowerCase() === "contact no");
-
-    // Active Employees
-    let activeCount = 0;
-    if (statusIndex !== -1) {
-      activeCount = dataRows.filter(row => row[statusIndex]?.toString().trim().toLowerCase() === "active").length;
-    }
-    // Logic for setActiveEmployee is now handled in fetchExactEmployeeCounts
-
-    // Monthly Hiring
-    const monthlyHiring = {};
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const currentDate = new Date();
-    // Initialize
-    for (let i = 5; i >= 0; i--) {
-      const monthIndex = (currentDate.getMonth() - i + 12) % 12;
-      const monthYear = `${months[monthIndex]} ${currentDate.getFullYear()}`;
-      monthlyHiring[monthYear] = { hired: 0 };
-    }
-
-    let thisMonthJoined = [];
-
-    if (dateOfJoiningIndex !== -1) {
-      dataRows.forEach(row => {
-        const dateStr = row[dateOfJoiningIndex];
-        if (dateStr) {
-          const date = parseSheetDate(dateStr);
-          if (date) {
-            const monthYear = `${months[date.getMonth()]} ${date.getFullYear()}`;
-            if (monthlyHiring[monthYear]) monthlyHiring[monthYear].hired += 1;
-            else monthlyHiring[monthYear] = { hired: 1 };
-          }
-        }
-      });
-    }
-
-    // Department Data
-    const departmentCounts = {};
-    dataRows.forEach(row => {
-      const d = row[departmentIndex]?.toString().trim();
-      if (d) departmentCounts[d] = (departmentCounts[d] || 0) + 1;
-    });
-    setDepartmentData(Object.keys(departmentCounts).map(k => ({ department: k, employees: departmentCounts[k] })));
-
-    // Store monthly hiring for combination later
-    setMonthlyHiringState(monthlyHiring);
-
-  }, [joiningEntryData]);
-
-  // Handle Designation Data (Direct Fetch from JOINING_FMS)
-  useEffect(() => {
-    const fetchDesignationData = async () => {
-      try {
-        const url = `${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS`;
-        const response = await fetch(url);
-        const data = await response.json();
-        const rows = data.data;
-
-        if (!rows || rows.length < 2) {
-          setDesignationData([]);
-          return;
-        }
-
-        const designationCounts = {};
-        // Start from index 1 (skip header)
-        rows.slice(1).forEach(row => {
-          // Filter: Column BM (Index 64) - Don't show if "Yes"
-          const colBM = (row[64] || "").toString().trim().toLowerCase();
-          if (colBM === "yes") return;
-
-          // Designation: Column O (Index 14)
-          const designation = (row[14] || "").toString().trim();
-          if (designation) {
-            designationCounts[designation] = (designationCounts[designation] || 0) + 1;
-          }
-        });
-
-        setDesignationData(Object.keys(designationCounts).map(k => ({
-          designation: k,
-          employees: designationCounts[k]
-        })));
-
-      } catch (error) {
-        console.error("Error fetching designation data:", error);
-      }
-    };
-
-    fetchDesignationData();
-  }, []);
-
-  // Handle Leaving Data
-  useEffect(() => {
-    if (!globalLeavingData || globalLeavingData.length < 6) {
-      setLeftEmployee(0);
-      setLeaveThisMonth(0);
-      return;
-    }
-    const rawData = globalLeavingData;
-    const dataRows = rawData.slice(7).filter(row => {
-      // Filter out empty rows checking Employee ID (Column F / Index 5) or Name (Column K / Index 10)
-      return (row[5] && row[5].toString().trim() !== '') || (row[10] && row[10].toString().trim() !== '');
-    });
-
-    // Left This Month (Column H / Index 7)
-    const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
-    const thisMonthEmployees = dataRows.filter(row => {
-      const dateStr = row[7];
-      if (dateStr) {
-        const d = parseSheetDate(dateStr);
-        return d && d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-      }
-      return false;
-    });
-
-    setLeaveThisMonth(thisMonthEmployees.length);
-    setLeftThisMonthData(thisMonthEmployees.map(row => ({
-      employeeId: row[5] || "-",
-      name: row[10] || "-",
-      mobileNo: row[12] || "-",
-      leavingDate: row[7] || "-",
-    })));
-
-    // Monthly Leaving
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const monthlyLeaving = {};
-    for (let i = 5; i >= 0; i--) {
-      const monthIndex = (now.getMonth() - i + 12) % 12;
-      const monthYear = `${months[monthIndex]} ${now.getFullYear()}`;
-      monthlyLeaving[monthYear] = { left: 0 };
-    }
-
-    dataRows.forEach(row => {
-      const dateStr = row[7];
-      if (dateStr) {
-        const d = parseSheetDate(dateStr);
-        if (d) {
-          const my = `${months[d.getMonth()]} ${d.getFullYear()}`;
-          if (monthlyLeaving[my]) monthlyLeaving[my].left += 1;
-          else monthlyLeaving[my] = { left: 1 };
-        }
-      }
-    });
-
-    setMonthlyLeavingState(monthlyLeaving);
-
-  }, [globalLeavingData]);
-
-  // --- New Logic for Exact Active/Left Employee Count (Matching Employee Master Page) ---
-  useEffect(() => {
-    const fetchExactEmployeeCounts = async () => {
-      try {
-        const [joiningResponse, leavingResponse] = await Promise.all([
-          fetch(`${import.meta.env.VITE_JOINING_SHEET_URL}?action=read&sheet=JOINING_FMS&_=${Date.now()}`),
-          fetch(`${import.meta.env.VITE_LEAVING_SHEET_URL}?action=read&sheet=FMS&_=${Date.now()}`)
-        ]);
-
-        const [joiningText, leavingText] = await Promise.all([
-          joiningResponse.text(),
-          leavingResponse.text()
-        ]);
-
-        const parseJsonSafely = (text, fallback = { data: [] }) => {
-          if (!text || typeof text !== "string") return fallback;
-          try {
-            const jsonStart = text.indexOf("{");
-            const jsonEnd = text.lastIndexOf("}");
-            if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-              return JSON.parse(text.slice(jsonStart, jsonEnd + 1));
-            }
-            const arrStart = text.indexOf("[");
-            const arrEnd = text.lastIndexOf("]");
-            if (arrStart !== -1 && arrEnd !== -1 && arrEnd > arrStart) {
-              return JSON.parse(text.slice(arrStart, arrEnd + 1));
-            }
-            return JSON.parse(text);
-          } catch (e) {
-            return fallback;
-          }
-        };
-
-        const joiningJson = parseJsonSafely(joiningText, { data: [] });
-        const leavingJson = parseJsonSafely(leavingText, { data: [] });
-
-        const rawJoining = joiningJson.data || [];
-        const rawLeaving = leavingJson.data || [];
-
-        const normalizeId = (id) => id ? id.toString().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-        const fmsIds = new Set();
-        
-        let processedLeaving = [];
-        if (rawLeaving.length > 7) {
-          const leavingRows = rawLeaving.slice(7);
-          leavingRows.forEach(row => {
-            const id = normalizeId(row[5]);
-            if (id) fmsIds.add(id);
-          });
-
-          const seenLeavingKeys = new Set();
-          processedLeaving = leavingRows.map(row => {
-            const isArchivedManual = row[44] && row[44].toString().trim().toLowerCase() === 'yes';
-            const isChecklistFilled = row[42] && row[42].toString().trim().toLowerCase() === 'done';
-            return {
-              employeeId: row[5] || "",
-              name: row[10] || "",
-              mobileNo: row[12] || "",
-              isArchived: isArchivedManual || isChecklistFilled
-            };
-          }).filter(item => {
-            if (!item.isArchived) return false;
-            const id = normalizeId(item.employeeId);
-            const uniqueKey = id || (item.name + "-" + item.mobileNo).toLowerCase().replace(/[^a-z0-9]/g, "");
-            if (uniqueKey) {
-              if (seenLeavingKeys.has(uniqueKey)) return false;
-              seenLeavingKeys.add(uniqueKey);
-            }
-            return true;
-          });
-        }
-        
-        let processedJoining = [];
-        let thisMonthJoinedFMS = [];
-        if (rawJoining.length > 7) {
-          const headers = rawJoining[6] || [];
-          const getIndex = (name) => headers.findIndex(h => h && h.toString().trim().toLowerCase() === name.trim().toLowerCase());
-          const idxIndent = getIndex("Indent Number") !== -1 ? getIndex("Indent Number") : 5;
-          const idxName = getIndex("Candidate Name") !== -1 ? getIndex("Candidate Name") : 10;
-          const idxMobile = getIndex("Contact No") !== -1 ? getIndex("Contact No") : 23;
-          const idxStatus = getIndex("Status") !== -1 ? getIndex("Status") : 8;
-          const idxDateOfJoining = getIndex("Date of Joining") !== -1 ? getIndex("Date of Joining") : 12;
-
-          const seenJoiningKeys = new Set();
-          const currentMonth = new Date().getMonth();
-          const currentYear = new Date().getFullYear();
-
-          processedJoining = rawJoining.slice(7).map((row) => ({
-            employeeId: row[idxIndent] || "",
-            candidateName: row[idxName] || "",
-            mobileNo: row[idxMobile] || "",
-            status: row[idxStatus] || "",
-            joiningDate: row[idxDateOfJoining] || "",
-            colBM: row[64] || "",
-          })).filter(item => {
-            const isDone = item.status && item.status.toString().trim().toUpperCase() === "DONE";
-            const id = normalizeId(item.employeeId);
-            const inFms = fmsIds.has(id);
-            const isBMEmpty = !item.colBM || item.colBM.toString().trim() === "";
-            const hasDateOfJoining = !!item.joiningDate && item.joiningDate.toString().trim() !== "";
-
-            if (!(isDone && !inFms && isBMEmpty && hasDateOfJoining)) return false;
-            
-            const uniqueKey = id || (item.candidateName + "-" + item.mobileNo).toLowerCase().replace(/[^a-z0-9]/g, "");
-            if (uniqueKey) {
-              if (seenJoiningKeys.has(uniqueKey)) return false;
-              seenJoiningKeys.add(uniqueKey);
-            }
-
-            const d = parseSheetDate(item.joiningDate);
-            if (d && d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
-               thisMonthJoinedFMS.push({
-                 employeeId: item.employeeId || "-",
-                 name: item.candidateName || "-",
-                 mobileNo: item.mobileNo || "-",
-                 joiningDate: item.joiningDate,
-               });
-            }
-
-            return true;
-          });
-        }
-        
-        setActiveEmployee(processedJoining.length);
-        setJoinedThisMonthData(thisMonthJoinedFMS);
-        setLeftEmployee(processedLeaving.length);
-      } catch (err) {
-        console.error("Fetch Employee Counts Error:", err);
-      }
-    };
-    fetchExactEmployeeCounts();
-  }, []);
-
-  const [monthlyHiringState, setMonthlyHiringState] = useState({});
-  const [monthlyLeavingState, setMonthlyLeavingState] = useState({});
-
-  useEffect(() => {
-    if (Object.keys(monthlyHiringState).length > 0 && Object.keys(monthlyLeavingState).length > 0) {
-      setMonthlyHiringData(prepareMonthlyHiringData(monthlyHiringState, monthlyLeavingState));
-    } else if (Object.keys(monthlyHiringState).length > 0) {
-      // If only hiring data, show it with 0 left
-      setMonthlyHiringData(prepareMonthlyHiringData(monthlyHiringState, {}));
-    }
-  }, [monthlyHiringState, monthlyLeavingState]);
+    setIndentData(filtered);
+  }, [allIndents, filterStatus]);
 
 
 
