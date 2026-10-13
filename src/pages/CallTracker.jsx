@@ -33,40 +33,42 @@ const CallTracker = () => {
     fetchStatusStats();
   }, []);
 
+  const isExcludedEntryBy = (name) => {
+    const n = (name || "").toLowerCase().trim();
+    return n.includes("apurva") || n.includes("bhavna");
+  };
+
   const fetchUsers = async () => {
     try {
-      const cached = sessionStorage.getItem('hrms_entry_by_cache');
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setUsers(parsed);
-            return;
-          }
-        } catch (_) {}
-      }
+      sessionStorage.removeItem('hrms_entry_by_cache');
+      sessionStorage.removeItem('hrms_entry_by_cache_v2');
 
       const { data: ctData } = await supabase
         .from('calling_tracking')
         .select('entry_by')
         .not('entry_by', 'is', null)
         .neq('entry_by', '')
+        .not('entry_by', 'ilike', '%apurva%')
+        .not('entry_by', 'ilike', '%bhavna%')
         .limit(300);
 
       const { data: mdData } = await supabase
         .from('master_dropdowns')
         .select('entry_by')
         .not('entry_by', 'is', null)
-        .neq('entry_by', '');
+        .neq('entry_by', '')
+        .not('entry_by', 'ilike', '%apurva%')
+        .not('entry_by', 'ilike', '%bhavna%');
 
       const ctList = (ctData || []).map((r) => (r.entry_by || "").trim()).filter(Boolean);
       const mdList = (mdData || []).map((r) => (r.entry_by || "").trim()).filter(Boolean);
 
-      const uniqueEntryBy = Array.from(new Set([...ctList, ...mdList])).filter(Boolean).sort((a, b) => a.localeCompare(b));
+      const uniqueEntryBy = Array.from(new Set([...ctList, ...mdList]))
+        .map((n) => (n || "").trim())
+        .filter((name) => Boolean(name) && !isExcludedEntryBy(name))
+        .sort((a, b) => a.localeCompare(b));
+
       setUsers(uniqueEntryBy);
-      if (uniqueEntryBy.length > 0) {
-        sessionStorage.setItem('hrms_entry_by_cache', JSON.stringify(uniqueEntryBy));
-      }
     } catch (err) {
       console.error("Failed to fetch entry_by users", err);
     }

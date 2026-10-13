@@ -31,7 +31,7 @@ import AdvanceRequest from './AdvanceRequest';
 import { triggerAdvanceProcessedNotification } from '../services/whatsappService';
 
 // ==========================================
-// ENHANCED SEARCHABLE SINGLE-SELECT DROPDOWN
+// ENHANCED SEARCHABLE MULTI-SELECT DROPDOWN
 // ==========================================
 const SearchableSelect = ({
   icon: Icon,
@@ -40,10 +40,18 @@ const SearchableSelect = ({
   options = [],
   allLabel = 'All',
   placeholder = 'Search...',
+  itemCounts,
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const ref = useRef(null);
+
+  const selectedValues = useMemo(() => {
+    if (Array.isArray(value)) return value;
+    return value ? [value] : [];
+  }, [value]);
+
+  const hasSelection = selectedValues.length > 0;
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -62,6 +70,14 @@ const SearchableSelect = ({
     return options.filter((opt) => String(opt).toLowerCase().includes(q));
   }, [options, query]);
 
+  const toggleOption = (opt) => {
+    if (selectedValues.includes(opt)) {
+      onChange(selectedValues.filter((v) => v !== opt));
+    } else {
+      onChange([...selectedValues, opt]);
+    }
+  };
+
   return (
     <div className={`relative ${open ? 'z-50' : 'z-10'}`} ref={ref}>
       <button
@@ -70,8 +86,8 @@ const SearchableSelect = ({
           setOpen((o) => !o);
           setQuery('');
         }}
-        className={`h-12 w-full rounded-xl border text-left text-sm font-semibold transition flex items-center justify-between pl-12 pr-4 outline-none cursor-pointer ${
-          value
+        className={`h-12 w-full rounded-xl border text-left text-sm font-semibold transition flex items-center justify-between pl-12 pr-3 outline-none cursor-pointer ${
+          hasSelection
             ? 'border-indigo-500 bg-indigo-50/40 text-indigo-950 font-bold shadow-xs hover:border-indigo-600 focus:ring-4 focus:ring-indigo-100'
             : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100'
         }`}
@@ -80,23 +96,46 @@ const SearchableSelect = ({
           <Icon
             size={18}
             className={`pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 ${
-              value ? 'text-indigo-600' : 'text-slate-400'
+              hasSelection ? 'text-indigo-600' : 'text-slate-400'
             }`}
           />
         )}
-        <span className="block truncate pr-2">{value || allLabel}</span>
+        <div className="flex-1 truncate pr-2">
+          {!hasSelection ? (
+            <span className="block truncate text-slate-700">{allLabel}</span>
+          ) : selectedValues.length === 1 ? (
+            <span className="block truncate font-bold text-indigo-950">
+              {selectedValues[0]}{itemCounts?.[selectedValues[0]] !== undefined ? ` (${itemCounts[selectedValues[0]]})` : ''}
+            </span>
+          ) : selectedValues.length === 2 ? (
+            <span
+              className="block truncate font-bold text-indigo-950 text-xs"
+              title={selectedValues.map((v) => `${v}${itemCounts?.[v] !== undefined ? `: ${itemCounts[v]}` : ''}`).join(', ')}
+            >
+              {selectedValues.map((v) => `${v}${itemCounts?.[v] !== undefined ? ` (${itemCounts[v]})` : ''}`).join(', ')}
+            </span>
+          ) : (
+            <div className="flex items-center gap-1.5 truncate" title={selectedValues.map((v) => `${v}${itemCounts?.[v] !== undefined ? `: ${itemCounts[v]}` : ''}`).join(', ')}>
+              <span className="truncate font-bold text-indigo-950">
+                {selectedValues[0]}{itemCounts?.[selectedValues[0]] !== undefined ? ` (${itemCounts[selectedValues[0]]})` : ''}
+              </span>
+              <span className="shrink-0 rounded-full bg-indigo-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                +{selectedValues.length - 1}
+              </span>
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {value && (
+          {hasSelection && (
             <span
               role="button"
               tabIndex={0}
               onClick={(e) => {
                 e.stopPropagation();
-                onChange('');
-                setOpen(false);
+                onChange([]);
               }}
               className="p-1 rounded-md hover:bg-indigo-200/60 text-slate-400 hover:text-indigo-800 transition cursor-pointer"
-              title="Clear"
+              title="Clear all"
             >
               <X size={15} />
             </span>
@@ -111,7 +150,7 @@ const SearchableSelect = ({
       </button>
 
       {open && (
-        <div className="absolute left-0 z-50 mt-1 max-h-64 w-full min-w-[220px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-fadeIn">
+        <div className="absolute left-0 z-50 mt-1 max-h-72 w-full min-w-[220px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-fadeIn">
           {options.length > 5 && (
             <div className="p-2.5 border-b border-slate-100 bg-slate-50/70">
               <div className="relative">
@@ -137,44 +176,100 @@ const SearchableSelect = ({
             </div>
           )}
 
-          <div className="max-h-52 overflow-y-auto p-1.5 text-xs">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-100 bg-slate-50 text-[11px] font-bold">
             <button
               type="button"
               onClick={() => {
-                onChange('');
-                setOpen(false);
+                const allFilteredSelected = filteredOptions.length > 0 && filteredOptions.every((opt) => selectedValues.includes(opt));
+                if (allFilteredSelected) {
+                  onChange(selectedValues.filter((v) => !filteredOptions.includes(v)));
+                } else {
+                  onChange(Array.from(new Set([...selectedValues, ...filteredOptions])));
+                }
               }}
+              className="text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+            >
+              {filteredOptions.length > 0 && filteredOptions.every((opt) => selectedValues.includes(opt))
+                ? 'Deselect All'
+                : 'Select All'}
+            </button>
+            {hasSelection && (
+              <button
+                type="button"
+                onClick={() => onChange([])}
+                className="text-rose-500 hover:text-rose-700 transition cursor-pointer"
+              >
+                Clear ({selectedValues.length})
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-52 overflow-y-auto p-1.5 text-xs space-y-0.5">
+            <button
+              type="button"
+              onClick={() => onChange([])}
               className={`flex w-full items-center justify-between px-3 py-2 rounded-xl font-semibold transition cursor-pointer ${
-                !value
+                !hasSelection
                   ? 'bg-indigo-50 text-indigo-700 font-bold'
                   : 'text-slate-700 hover:bg-slate-50'
               }`}
             >
-              <span>{allLabel}</span>
-              {!value && <Check size={14} className="text-indigo-600" />}
+              <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                <div
+                  className={`h-4 w-4 rounded flex items-center justify-center shrink-0 transition-colors ${
+                    !hasSelection
+                      ? 'bg-indigo-600 text-white'
+                      : 'border border-slate-300 bg-white'
+                  }`}
+                >
+                  {!hasSelection && <Check size={11} strokeWidth={3} />}
+                </div>
+                <span className="truncate">{allLabel}</span>
+              </div>
             </button>
 
             {filteredOptions.length === 0 ? (
               <div className="py-4 text-center text-slate-400 text-xs">No matching options</div>
             ) : (
-              filteredOptions.map((opt) => (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => {
-                    onChange(opt);
-                    setOpen(false);
-                  }}
-                  className={`flex w-full items-center justify-between px-3 py-2 rounded-xl font-semibold transition cursor-pointer ${
-                    value === opt
-                      ? 'bg-indigo-50 text-indigo-700 font-bold'
-                      : 'text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <span className="truncate text-left">{opt}</span>
-                  {value === opt && <Check size={14} className="text-indigo-600 shrink-0 ml-2" />}
-                </button>
-              ))
+              filteredOptions.map((opt) => {
+                const isSelected = selectedValues.includes(opt);
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => toggleOption(opt)}
+                    className={`flex w-full items-center justify-between px-3 py-2 rounded-xl font-semibold transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-indigo-50/80 text-indigo-900 font-bold'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between w-full min-w-0 pr-1">
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <div
+                          className={`h-4 w-4 rounded flex items-center justify-center shrink-0 transition-colors ${
+                            isSelected
+                              ? 'bg-indigo-600 text-white'
+                              : 'border border-slate-300 bg-white'
+                          }`}
+                        >
+                          {isSelected && <Check size={11} strokeWidth={3} />}
+                        </div>
+                        <span className="truncate text-left">{opt}</span>
+                      </div>
+                      {itemCounts && itemCounts[opt] !== undefined && (
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md shrink-0 ${
+                            isSelected ? 'bg-indigo-200 text-indigo-900' : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {itemCounts[opt]}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>
@@ -412,10 +507,10 @@ const TaDa = () => {
   const [advanceRows, setAdvanceRows] = useState([]);
   const [activeTab, setActiveTab] = useState('fms');
   const [searchTerm, setSearchTerm] = useState('');
-  const [employeeFilter, setEmployeeFilter] = useState('');
-  const [vehicleFilter, setVehicleFilter] = useState('');
-  const [monthFilter, setMonthFilter] = useState('');
-  const [yearFilter, setYearFilter] = useState('');
+  const [employeeFilter, setEmployeeFilter] = useState([]);
+  const [vehicleFilter, setVehicleFilter] = useState([]);
+  const [monthFilter, setMonthFilter] = useState([]);
+  const [yearFilter, setYearFilter] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
@@ -825,7 +920,13 @@ const TaDa = () => {
   const employeeOptions = useMemo(
     () => [...new Set(
       allRows
-        .filter((item) => (!monthFilter || item.month === monthFilter) && (!yearFilter || item.year === yearFilter))
+        .filter((item) => {
+          const hasM = Array.isArray(monthFilter) ? monthFilter.length > 0 : Boolean(monthFilter);
+          const matchM = !hasM || (Array.isArray(monthFilter) ? monthFilter.includes(item.month) : item.month === monthFilter);
+          const hasY = Array.isArray(yearFilter) ? yearFilter.length > 0 : Boolean(yearFilter);
+          const matchY = !hasY || (Array.isArray(yearFilter) ? yearFilter.includes(item.year) : item.year === yearFilter);
+          return matchM && matchY;
+        })
         .map((item) => item.employeeName)
         .filter(Boolean)
     )].sort(),
@@ -845,7 +946,7 @@ const TaDa = () => {
     [allRows]
   );
 
-  const matchesFilters = (item, useEmployeeFilter = true) => {
+  const matchesFilters = (item, useEmployeeFilter = true, useVehicleFilter = true) => {
     const search = searchTerm.toLowerCase();
     const matchesSearch = !searchTerm ||
       item.serialNo.toLowerCase().includes(search) ||
@@ -859,14 +960,53 @@ const TaDa = () => {
       (item.remarks || '').toLowerCase().includes(search) ||
       item.date.toLowerCase().includes(search);
 
-    return matchesSearch &&
-      (!useEmployeeFilter || !employeeFilter || item.employeeName === employeeFilter) &&
-      (activeTab !== 'fms' || !vehicleFilter || item.vehicleType === vehicleFilter) &&
-      (!monthFilter || item.month === monthFilter) &&
-      (!yearFilter || item.year === yearFilter);
+    const hasEmp = Array.isArray(employeeFilter) ? employeeFilter.length > 0 : Boolean(employeeFilter);
+    const matchesEmp = !useEmployeeFilter || !hasEmp || (Array.isArray(employeeFilter) ? employeeFilter.includes(item.employeeName) : item.employeeName === employeeFilter);
+
+    const hasVeh = Array.isArray(vehicleFilter) ? vehicleFilter.length > 0 : Boolean(vehicleFilter);
+    const matchesVeh = !useVehicleFilter || activeTab !== 'fms' || !hasVeh || (Array.isArray(vehicleFilter) ? vehicleFilter.includes(item.vehicleType) : item.vehicleType === vehicleFilter);
+
+    const hasMonth = Array.isArray(monthFilter) ? monthFilter.length > 0 : Boolean(monthFilter);
+    const matchesMonth = !hasMonth || (Array.isArray(monthFilter) ? monthFilter.includes(item.month) : item.month === monthFilter);
+
+    const hasYear = Array.isArray(yearFilter) ? yearFilter.length > 0 : Boolean(yearFilter);
+    const matchesYear = !hasYear || (Array.isArray(yearFilter) ? yearFilter.includes(item.year) : item.year === yearFilter);
+
+    return matchesSearch && matchesEmp && matchesVeh && matchesMonth && matchesYear;
   };
 
   const filteredRows = activeRows.filter((item) => matchesFilters(item));
+
+  const vehicleOptionCounts = useMemo(() => {
+    const counts = {};
+    activeRows.forEach((item) => {
+      if (matchesFilters(item, true, false)) {
+        const vt = item.vehicleType || 'Unknown';
+        counts[vt] = (counts[vt] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [activeRows, searchTerm, employeeFilter, monthFilter, yearFilter, activeTab]);
+
+  const vehicleBreakdown = useMemo(() => {
+    const data = {};
+    filteredRows.forEach((item) => {
+      const vt = item.vehicleType || 'Unknown';
+      if (!data[vt]) {
+        data[vt] = { records: 0, km: 0, amount: 0, stayDays: 0, approved: 0, pending: 0 };
+      }
+      data[vt].records += 1;
+      data[vt].km += item.totalRunningKm || 0;
+      data[vt].amount += item.totalAmount || 0;
+      data[vt].stayDays += item.stayDay || 0;
+      const status = String(item.status || '').toLowerCase();
+      if (status.includes('approved')) data[vt].approved += 1;
+      if (activeTab === 'advance' && !status.includes('approved') && !status.includes('rejected')) {
+        data[vt].pending += 1;
+      }
+    });
+    return data;
+  }, [filteredRows, activeTab]);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -946,7 +1086,9 @@ const TaDa = () => {
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'TA DA');
-    XLSX.writeFile(workbook, `ta_da_${activeTab}_${monthFilter || 'all'}_${yearFilter || 'all'}.xlsx`);
+    const monthLabel = Array.isArray(monthFilter) ? (monthFilter.length ? monthFilter.join('_') : 'all') : (monthFilter || 'all');
+    const yearLabel = Array.isArray(yearFilter) ? (yearFilter.length ? yearFilter.join('_') : 'all') : (yearFilter || 'all');
+    XLSX.writeFile(workbook, `ta_da_${activeTab}_${monthLabel}_${yearLabel}.xlsx`);
   };
 
   // Employee-wise vehicle KM + amount from the filtered FMS rows.
@@ -1014,7 +1156,9 @@ const TaDa = () => {
 
     const workbook = XLSXStyle.utils.book_new();
     XLSXStyle.utils.book_append_sheet(workbook, worksheet, 'Vehicle Count');
-    XLSXStyle.writeFile(workbook, `ta_da_vehicle_count_${monthFilter || 'all'}_${yearFilter || 'all'}.xlsx`);
+    const monthLabel = Array.isArray(monthFilter) ? (monthFilter.length ? monthFilter.join('_') : 'all') : (monthFilter || 'all');
+    const yearLabel = Array.isArray(yearFilter) ? (yearFilter.length ? yearFilter.join('_') : 'all') : (yearFilter || 'all');
+    XLSXStyle.writeFile(workbook, `ta_da_vehicle_count_${monthLabel}_${yearLabel}.xlsx`);
   };
 
   const buildFmsKmSummary = (rows, includeEmployee) => {
@@ -1052,7 +1196,8 @@ const TaDa = () => {
 
   const downloadFmsKmPdf = (reportType) => {
     const isAllReport = reportType === 'all';
-    if (!isAllReport && !employeeFilter) {
+    const hasEmp = Array.isArray(employeeFilter) ? employeeFilter.length > 0 : Boolean(employeeFilter);
+    if (!isAllReport && !hasEmp) {
       alert('Individual PDF ke liye pehle employee select karein.');
       return;
     }
@@ -1076,7 +1221,7 @@ const TaDa = () => {
     const summaryRows = buildFmsKmSummary(reportRows, isAllReport);
     const totalKm = reportRows.reduce((sum, item) => sum + (item.totalRunningKm || 0), 0);
     const totalAmount = reportRows.reduce((sum, item) => sum + (item.totalAmount || 0), 0);
-    const employeeLabel = isAllReport ? 'All Employees' : employeeFilter;
+    const employeeLabel = isAllReport ? 'All Employees' : (Array.isArray(employeeFilter) ? employeeFilter.join(', ') : employeeFilter);
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
     doc.setFontSize(16);
@@ -1085,7 +1230,9 @@ const TaDa = () => {
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
     doc.text(`Employee: ${employeeLabel}`, 14, 23);
-    doc.text(`Month: ${monthFilter || 'All Months'}   Year: ${yearFilter || 'All Years'}   Rate: Bike Rs. ${BIKE_KM_RATE}/KM, Car Rs. ${CAR_KM_RATE}/KM`, 14, 29);
+    const monthText = Array.isArray(monthFilter) ? (monthFilter.length ? monthFilter.join(', ') : 'All Months') : (monthFilter || 'All Months');
+    const yearText = Array.isArray(yearFilter) ? (yearFilter.length ? yearFilter.join(', ') : 'All Years') : (yearFilter || 'All Years');
+    doc.text(`Month: ${monthText}   Year: ${yearText}   Rate: Bike Rs. ${BIKE_KM_RATE}/KM, Car Rs. ${CAR_KM_RATE}/KM`, 14, 29);
     doc.text(`Start Date: ${formatDateObj(dates[0])}   End Date: ${formatDateObj(dates[dates.length - 1])}`, 14, 35);
     doc.setFont('helvetica', 'bold');
     doc.text(`Total KM: ${totalKm}   Amount: Rs. ${totalAmount}`, 14, 41);
@@ -1121,15 +1268,18 @@ const TaDa = () => {
       alternateRowStyles: { fillColor: [248, 250, 252] },
     });
 
-    doc.save(`ta_da_fms_${isAllReport ? 'all' : sanitizeFileName(employeeFilter)}_${sanitizeFileName(monthFilter)}_${sanitizeFileName(yearFilter)}.pdf`);
+    const empFileName = isAllReport ? 'all' : sanitizeFileName(Array.isArray(employeeFilter) ? employeeFilter.join('_') : (employeeFilter || ''));
+    const monthFileName = sanitizeFileName(Array.isArray(monthFilter) ? (monthFilter.length ? monthFilter.join('_') : 'all') : (monthFilter || 'all'));
+    const yearFileName = sanitizeFileName(Array.isArray(yearFilter) ? (yearFilter.length ? yearFilter.join('_') : 'all') : (yearFilter || 'all'));
+    doc.save(`ta_da_fms_${empFileName}_${monthFileName}_${yearFileName}.pdf`);
   };
 
   const clearFilters = () => {
     setSearchTerm('');
-    setEmployeeFilter('');
-    setVehicleFilter('');
-    setMonthFilter('');
-    setYearFilter('');
+    setEmployeeFilter([]);
+    setVehicleFilter([]);
+    setMonthFilter([]);
+    setYearFilter([]);
   };
 
   return (
@@ -1234,7 +1384,18 @@ const TaDa = () => {
             <p className="text-xs font-black uppercase tracking-wide text-indigo-700">Records</p>
             <FileText size={18} className="text-indigo-500" />
           </div>
-          <p className="mt-2 text-3xl font-black text-indigo-950">{summary.records}</p>
+          <div className="mt-2 flex items-baseline gap-2 flex-wrap">
+            <p className="text-3xl font-black text-indigo-950">{summary.records}</p>
+            {vehicleFilter.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {vehicleFilter.map((v) => (
+                  <span key={v} className="rounded-md bg-indigo-200/80 px-2 py-0.5 text-xs font-bold text-indigo-900">
+                    {v}: {vehicleBreakdown[v]?.records || 0}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-4">
           <div className="flex items-center justify-between">
@@ -1243,16 +1404,38 @@ const TaDa = () => {
             </p>
             <Route size={18} className="text-emerald-500" />
           </div>
-          <p className="mt-2 text-3xl font-black text-emerald-950">
-            {activeTab === 'advance' ? summary.approved : Math.round(summary.totalKm)}
-          </p>
+          <div className="mt-2 flex items-baseline gap-2 flex-wrap">
+            <p className="text-3xl font-black text-emerald-950">
+              {activeTab === 'advance' ? summary.approved : Math.round(summary.totalKm)}
+            </p>
+            {vehicleFilter.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {vehicleFilter.map((v) => (
+                  <span key={v} className="rounded-md bg-emerald-200/80 px-2 py-0.5 text-xs font-bold text-emerald-900">
+                    {v}: {activeTab === 'advance' ? (vehicleBreakdown[v]?.approved || 0) : Math.round(vehicleBreakdown[v]?.km || 0)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4">
           <div className="flex items-center justify-between">
             <p className="text-xs font-black uppercase tracking-wide text-amber-700">Amount</p>
             <Wallet size={18} className="text-amber-500" />
           </div>
-          <p className="mt-2 text-3xl font-black text-amber-950">Rs. {Math.round(summary.totalAmount)}</p>
+          <div className="mt-2 flex items-baseline gap-2 flex-wrap">
+            <p className="text-3xl font-black text-amber-950">Rs. {Math.round(summary.totalAmount)}</p>
+            {vehicleFilter.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {vehicleFilter.map((v) => (
+                  <span key={v} className="rounded-md bg-amber-200/80 px-2 py-0.5 text-xs font-bold text-amber-900">
+                    {v}: Rs. {Math.round(vehicleBreakdown[v]?.amount || 0)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="rounded-2xl border border-sky-100 bg-sky-50/70 p-4">
           <div className="flex items-center justify-between">
@@ -1261,9 +1444,20 @@ const TaDa = () => {
             </p>
             <CalendarDays size={18} className="text-sky-500" />
           </div>
-          <p className="mt-2 text-3xl font-black text-sky-950">
-            {activeTab === 'advance' ? summary.pending : summary.stayDays}
-          </p>
+          <div className="mt-2 flex items-baseline gap-2 flex-wrap">
+            <p className="text-3xl font-black text-sky-950">
+              {activeTab === 'advance' ? summary.pending : summary.stayDays}
+            </p>
+            {vehicleFilter.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {vehicleFilter.map((v) => (
+                  <span key={v} className="rounded-md bg-sky-200/80 px-2 py-0.5 text-xs font-bold text-sky-900">
+                    {v}: {activeTab === 'advance' ? (vehicleBreakdown[v]?.pending || 0) : (vehicleBreakdown[v]?.stayDays || 0)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1315,6 +1509,7 @@ const TaDa = () => {
               options={vehicleOptions}
               allLabel="All Vehicles"
               placeholder="Search vehicle..."
+              itemCounts={vehicleOptionCounts}
             />
           )}
 
@@ -1367,7 +1562,14 @@ const TaDa = () => {
             </button>
           </div>
           <div className="flex items-center gap-3">
-            <p className="text-sm font-semibold text-slate-500">{filteredRows.length} records shown</p>
+            <p className="text-sm font-semibold text-slate-500">
+              {filteredRows.length} records shown
+              {vehicleFilter.length > 1 && (
+                <span className="ml-1.5 font-bold text-indigo-600">
+                  ({vehicleFilter.map((v) => `${v}: ${vehicleBreakdown[v]?.records || 0}`).join(' | ')})
+                </span>
+              )}
+            </p>
             {activeTab === 'advance' && (
               <button
                 type="button"
