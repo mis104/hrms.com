@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronRight, Download, Share2 } from 'lucide-react';
+import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronRight, Download, Share2, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import { fetchLeaveRequests, createLeaveRequest, supabase } from '../services/supabaseService';
@@ -525,6 +525,36 @@ const LeaveRequest = () => {
     }
   };
 
+  const handleDeleteLeave = async (request) => {
+    const lrTitle = request.leaveRequestId || 'this leave request';
+    const empTitle = request.requestedBy || request.employeeName || '';
+    if (!window.confirm(`Are you sure you want to delete ${lrTitle}${empTitle ? ` for ${empTitle}` : ''}?`)) {
+      return;
+    }
+
+    try {
+      const toastId = toast.loading('Deleting leave request...');
+      let query = supabase.from('leave_requests').delete();
+
+      if (request.id) {
+        query = query.eq('id', request.id);
+      } else if (request.leaveRequestId) {
+        query = query.eq('leave_request_no', request.leaveRequestId);
+      } else {
+        throw new Error('No record ID found to delete');
+      }
+
+      const { error: delError } = await query;
+      if (delError) throw delError;
+
+      toast.success(`${lrTitle} deleted successfully!`, { id: toastId });
+      setLeavesData((prev) => prev.filter((item) => item.id !== request.id && item.leaveRequestId !== request.leaveRequestId));
+    } catch (err) {
+      console.error('Delete leave error:', err);
+      toast.error('Failed to delete: ' + err.message);
+    }
+  };
+
   const hasSubmittedToday = useMemo(() => {
     const today = new Date();
     const todayStr = formatDateToDDMMYYYY(today);
@@ -934,6 +964,16 @@ const LeaveRequest = () => {
                           >
                             <Share2 size={15} />
                           </button>
+
+                          {isAdmin && (
+                            <button
+                              title="Delete Leave Request"
+                              onClick={() => handleDeleteLeave(request)}
+                              className="p-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl border border-rose-200 transition cursor-pointer"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          )}
                         </div>
                       </div>
 
