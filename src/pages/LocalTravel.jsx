@@ -898,14 +898,11 @@ const LocalTravel = ({ isModal = false, onClose, initialTab = 'in' }) => {
                   </div>
 
                   {/* Submit IN Button */}
-                  <div className={isModal ? "sticky bottom-0 -mx-4 -mb-4 sm:-mx-6 sm:-mb-6 mt-4 p-3.5 sm:p-4 bg-white/95 backdrop-blur-md border-t border-slate-100 flex items-center justify-end z-10 shadow-[0_-6px_20px_rgba(0,0,0,0.05)]" : "pt-2"}>
+                  <div className="pt-2 pb-2">
                     <button
                       type="submit"
                       disabled={submittingIn || uploadingInPic}
-                      className={isModal
-                        ? "w-full h-12 flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 px-6 text-sm font-black text-white shadow-md hover:shadow-lg active:scale-98 transition disabled:opacity-50 cursor-pointer"
-                        : "inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 px-6 py-3 text-xs font-black text-white shadow-md hover:from-emerald-700 hover:to-teal-800 active:scale-95 transition disabled:opacity-50 cursor-pointer"
-                      }
+                      className="w-full h-12 flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 px-6 text-sm font-black text-white shadow-md hover:shadow-lg active:scale-98 transition disabled:opacity-50 cursor-pointer"
                     >
                       {submittingIn ? (
                         <>
