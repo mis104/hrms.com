@@ -678,7 +678,7 @@ export const triggerAdvanceRequestNotification = async ({
     });
   }
 
-  const link = approvedLink || `${window.location.origin}/ta-da`;
+  const link = approvedLink || `${window.location.origin}/ta-da?tab=advance`;
 
   const results = [];
   const uniquePhones = new Set();

@@ -1122,7 +1122,7 @@ const CallTracker = () => {
       {/* Modern Add / Edit Task Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto border border-slate-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-full max-h-[90vh] overflow-y-auto border border-slate-200">
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 sticky top-0 bg-white z-10">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center">
@@ -1142,7 +1142,7 @@ const CallTracker = () => {
               </button>
             </div>
             <form onSubmit={handleSubmit} className="p-5 space-y-3.5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3.5">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Entry By</label>
                   <select

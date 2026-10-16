@@ -191,7 +191,7 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
         advance: payload.advance,
         companyName: payload.company_name,
         remarks: payload.remarks,
-        approvedLink: `${window.location.origin}/ta-da`,
+        approvedLink: `${window.location.origin}/ta-da?tab=advance`,
         department: employeeDept || user.department || "Sales Head",
       }).catch((err) => {
         console.warn("Advance notification dispatch notice:", err);
@@ -221,7 +221,7 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
 
   const goToHistory = () => {
     if (onClose) onClose();
-    navigate('/ta-da');
+    navigate('/ta-da?tab=advance');
   };
 
   // SUCCESS CONFIRMATION VIEW

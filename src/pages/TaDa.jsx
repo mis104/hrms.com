@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   CalendarDays,
@@ -502,10 +503,30 @@ const sanitizeFileName = (value) =>
   String(value || 'all').trim().replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'all';
 
 const TaDa = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab') || searchParams.get('activeTab');
   const [visitRows, setVisitRows] = useState([]);
   const [travellingRows, setTravellingRows] = useState([]);
   const [advanceRows, setAdvanceRows] = useState([]);
-  const [activeTab, setActiveTab] = useState('fms');
+  const [activeTab, setActiveTab] = useState(
+    urlTab === 'advance' ? 'advance' : urlTab === 'travelling' ? 'travelling' : 'fms'
+  );
+
+  useEffect(() => {
+    const tab = searchParams.get('tab') || searchParams.get('activeTab');
+    if (tab && (tab === 'advance' || tab === 'travelling' || tab === 'fms')) {
+      setActiveTab((curr) => (curr !== tab ? tab : curr));
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (newTab) => {
+    setActiveTab(newTab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', newTab);
+      return next;
+    }, { replace: true });
+  };
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState([]);
   const [vehicleFilter, setVehicleFilter] = useState([]);
@@ -1538,7 +1559,7 @@ const TaDa = () => {
           <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
             <button
               type="button"
-              onClick={() => setActiveTab('fms')}
+              onClick={() => handleTabChange('fms')}
               className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-black transition ${activeTab === 'fms' ? 'bg-navy text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
             >
               <Car size={16} />
@@ -1546,7 +1567,7 @@ const TaDa = () => {
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('travelling')}
+              onClick={() => handleTabChange('travelling')}
               className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-black transition ${activeTab === 'travelling' ? 'bg-navy text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
             >
               <FileText size={16} />
@@ -1554,7 +1575,7 @@ const TaDa = () => {
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab('advance')}
+              onClick={() => handleTabChange('advance')}
               className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-black transition ${activeTab === 'advance' ? 'bg-navy text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
             >
               <Wallet size={16} />

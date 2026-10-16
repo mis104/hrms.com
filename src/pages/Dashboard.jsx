@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 
 import {
@@ -31,6 +32,11 @@ import {
 import { usePendingCounts } from '../hooks/usePendingCounts';
 import { supabase } from '../services/supabaseClient';
 
+const PIE_COLORS = [
+  '#4f46e5', '#06b6d4', '#10b981', '#f59e0b', '#ec4899',
+  '#8b5cf6', '#3b82f6', '#14b8a6', '#f97316', '#64748b', '#84cc16'
+];
+
 const Dashboard = () => {
   const [totalEmployee, setTotalEmployee] = useState(0);
   const [activeEmployee, setActiveEmployee] = useState(0);
@@ -43,6 +49,7 @@ const Dashboard = () => {
   const [leaveStatusData, setLeaveStatusData] = useState([]);
   const [leaveTypeData, setLeaveTypeData] = useState([]);
   const [departmentData, setDepartmentData] = useState([]);
+  const [deptHiringData, setDeptHiringData] = useState([]);
 
   const [allIndents, setAllIndents] = useState([]);
   const [indentData, setIndentData] = useState([]);
@@ -315,6 +322,37 @@ const Dashboard = () => {
         if (dept) deptCounts[dept] = (deptCounts[dept] || 0) + 1;
       });
       setDepartmentData(Object.keys(deptCounts).map(k => ({ department: k, employees: deptCounts[k] })));
+
+      // Department-wise Hiring % Pie Chart Data
+      const deptHiredMap = {};
+      fmsRows.forEach(row => {
+        const dept = (row.department || "Other").trim();
+        const indNo = (row.indent_no || "").trim();
+        const joined = joiningCountMap[indNo] || parseInt(row.total_joining) || 0;
+        if (dept) {
+          deptHiredMap[dept] = (deptHiredMap[dept] || 0) + joined;
+        }
+      });
+      let totalHiredAllDepts = Object.values(deptHiredMap).reduce((a, b) => a + b, 0);
+      if (totalHiredAllDepts === 0) {
+        fmsRows.forEach(row => {
+          const dept = (row.department || "Other").trim();
+          const posts = parseInt(row.number_of_post) || 1;
+          if (dept) {
+            deptHiredMap[dept] = (deptHiredMap[dept] || 0) + posts;
+          }
+        });
+        totalHiredAllDepts = Object.values(deptHiredMap).reduce((a, b) => a + b, 0);
+      }
+      const deptHiringPercentData = Object.keys(deptHiredMap)
+        .map(k => ({
+          name: k,
+          value: deptHiredMap[k],
+          percent: totalHiredAllDepts > 0 ? Number(((deptHiredMap[k] / totalHiredAllDepts) * 100).toFixed(1)) : 0
+        }))
+        .filter(d => d.value > 0)
+        .sort((a, b) => b.value - a.value);
+      setDeptHiringData(deptHiringPercentData);
 
       // 6. Monthly Hiring & Leaving
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -793,8 +831,8 @@ const Dashboard = () => {
                             <Calendar size={14} className="mr-2 text-indigo-400" />
                             <span className="font-bold text-slate-600">
                               {(() => {
-                                const date = new Date(item.completionDate);
-                                if (!date || isNaN(date.getTime())) return "Invalid date";
+                                const date = parseSheetDate(item.completionDate);
+                                if (!date) return item.completionDate;
                                 return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
                               })()}
                             </span>
@@ -826,6 +864,91 @@ const Dashboard = () => {
             </table>
           </div>
         </div>
+        </section>
+
+        {/* Department-wise Hiring % Pie Chart */}
+        <section className="erp-fade-up rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5" style={{ animationDelay: "380ms" }}>
+          <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
+                <Users size={19} />
+              </div>
+              <div>
+                <h2 className="text-base font-black text-slate-900">Department-wise Hiring %</h2>
+                <p className="text-xs font-semibold text-slate-500">Distribution of employee hiring across departments</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-teal-50 text-teal-800 border border-teal-200/60 font-mono">
+                {deptHiringData.reduce((acc, curr) => acc + curr.value, 0)} Total Hires
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+            {/* Pie Chart */}
+            <div className="h-[340px] w-full lg:col-span-7 flex items-center justify-center">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Tooltip
+                    formatter={(value, name, props) => [`${value} Hires (${props.payload.percent}%)`, name]}
+                    contentStyle={{
+                      backgroundColor: 'rgba(255, 255, 255, 0.98)',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '12px',
+                      color: '#0f172a',
+                      boxShadow: '0 18px 35px rgba(15, 23, 42, 0.12)',
+                      padding: '10px 14px',
+                      fontWeight: '700',
+                      fontSize: '12px'
+                    }}
+                  />
+                  <Pie
+                    data={deptHiringData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={65}
+                    outerRadius={115}
+                    paddingAngle={3}
+                    dataKey="value"
+                    label={({ name, percent }) => `${name} ${percent}%`}
+                    labelLine={true}
+                  >
+                    {deptHiringData.map((entry, index) => (
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={PIE_COLORS[index % PIE_COLORS.length]}
+                      />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Department Breakdown List / Legend */}
+            <div className="lg:col-span-5 max-h-[340px] overflow-y-auto pr-1 space-y-2">
+              {deptHiringData.map((dept, index) => {
+                const color = PIE_COLORS[index % PIE_COLORS.length];
+                return (
+                  <div
+                    key={dept.name}
+                    className="flex items-center justify-between p-2.5 rounded-xl border border-slate-100 bg-slate-50/70 hover:bg-slate-100/80 transition"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="w-3 h-3 rounded-md shrink-0" style={{ backgroundColor: color }} />
+                      <span className="text-xs font-bold text-slate-800 truncate">{dept.name}</span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-xs font-semibold text-slate-500">{dept.value} hires</span>
+                      <span className="text-xs font-black font-mono px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-slate-900 shadow-2xs">
+                        {dept.percent}%
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </section>
 
         {/* Designation-wise Employee Count */}
@@ -962,9 +1085,9 @@ const Dashboard = () => {
         </div>
       )}
 
-      {showLeftModal && (
+      {showLeftModal && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[99999] flex items-start justify-center bg-slate-950/55 p-4 pt-6 sm:pt-10 backdrop-blur-sm overflow-y-auto"
           onClick={() => setShowLeftModal(false)}
         >
           <div
@@ -1027,12 +1150,13 @@ const Dashboard = () => {
               </table>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showJoinedModal && (
+      {showJoinedModal && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-[99999] flex items-start justify-center bg-slate-950/55 p-4 pt-6 sm:pt-10 backdrop-blur-sm overflow-y-auto"
           onClick={() => setShowJoinedModal(false)}
         >
           <div
@@ -1095,7 +1219,8 @@ const Dashboard = () => {
               </table>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
