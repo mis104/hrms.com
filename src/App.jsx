@@ -70,12 +70,66 @@ import LocalTravel from "./pages/LocalTravel";
 import OutstationTravel from "./pages/OutstationTravel";
 import AdvanceRequest from "./pages/AdvanceRequest";
 import HodMaster from "./pages/HodMaster";
+import { RefreshCw } from "lucide-react";
+
+class GlobalErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Global crash caught:", error, info);
+  }
+
+  handleReload = () => {
+    try {
+      localStorage.removeItem("mark_attendance_data_cache_v1");
+      localStorage.removeItem("employee_mobile_feed_cache_v2");
+    } catch {}
+    this.setState({ hasError: false });
+    window.location.href = "/";
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4 bg-[#f4f7fb]">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-xl">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-teal-50 text-teal-600 mb-4 ring-1 ring-teal-100">
+              <RefreshCw size={24} className="text-teal-600" />
+            </div>
+            <h2 className="text-base font-black text-slate-950">App Reloading</h2>
+            <p className="mt-2 text-xs font-semibold text-slate-500">
+              App refreshed. Tap below to continue.
+            </p>
+            <button
+              type="button"
+              onClick={this.handleReload}
+              className="mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-teal-600 text-sm font-black text-white shadow-lg transition hover:bg-teal-700"
+            >
+              <RefreshCw size={18} />
+              Open App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   return (
     <div className="gradient-bg min-h-screen">
-      <Router>
-        <Toaster position="top-right" />
-        <Routes>
+      <GlobalErrorBoundary>
+        <Router>
+          <Toaster position="top-right" />
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/quick-leave" element={<QuickLeaveAction />} />
           <Route path="/leave-action" element={<QuickLeaveAction />} />
@@ -174,6 +228,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>
+      </GlobalErrorBoundary>
     </div>
   );
 }

@@ -291,14 +291,6 @@ const Layout = () => {
     document.documentElement.classList.toggle('erp-dark-root', isDarkMode);
   }, [isDarkMode]);
 
-  if (isEmployee && location.pathname === '/') {
-    return <Navigate to="/employee-mobile" replace />;
-  }
-
-  if (isEmployee && !employeeAllowedPaths.includes(location.pathname)) {
-    return <Navigate to="/employee-mobile" replace />;
-  }
-
   // Mobile Pull-to-Refresh State
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -392,6 +384,14 @@ const Layout = () => {
       window.removeEventListener('touchcancel', handleTouchEnd);
     };
   }, [isMobile, isRefreshing, pullDistance, triggerMobileRefresh]);
+
+  if (isEmployee && location.pathname === '/') {
+    return <Navigate to="/employee-mobile" replace />;
+  }
+
+  if (isEmployee && !employeeAllowedPaths.includes(location.pathname)) {
+    return <Navigate to="/employee-mobile" replace />;
+  }
 
   if (isEmployeeMobile) {
     return (
