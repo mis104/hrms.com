@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, Gift, LogOut, Mail, Moon, Search, Sun, User } from 'lucide-react';
+import { Bell, CheckCircle2, Gift, LogOut, Mail, Moon, RefreshCw, Search, Sun, User } from 'lucide-react';
 import Sidebar from './Sidebar';
 import useAuthStore from '../store/authStore';
 import { getUserRole } from '../utils/authRole';
@@ -299,10 +299,149 @@ const Layout = () => {
     return <Navigate to="/employee-mobile" replace />;
   }
 
+  // Mobile Pull-to-Refresh State
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isRefreshSuccess, setIsRefreshSuccess] = useState(false);
+  const pullStartRef = React.useRef({ x: 0, y: 0, tracking: false });
+
+  const triggerMobileRefresh = React.useCallback(async () => {
+    setIsRefreshing(true);
+    setIsRefreshSuccess(false);
+    setPullDistance(45);
+    try {
+      window.dispatchEvent(new CustomEvent('hrms:mobile-refresh', { detail: { timestamp: Date.now() } }));
+      // Give child pages and network queries time to complete
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      setIsRefreshSuccess(true);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    } catch (e) {
+      console.warn('Mobile refresh error:', e);
+    } finally {
+      setIsRefreshing(false);
+      setIsRefreshSuccess(false);
+      setPullDistance(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isMobile) return;
+
+    const getScrollTop = () =>
+      window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+    const handleTouchStart = (e) => {
+      if (!e.touches || e.touches.length === 0) return;
+      if (getScrollTop() <= 5 && !isRefreshing) {
+        pullStartRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          tracking: true,
+        };
+      } else {
+        pullStartRef.current.tracking = false;
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (!pullStartRef.current.tracking || isRefreshing) return;
+
+      const currentY = e.touches[0].clientY;
+      const currentX = e.touches[0].clientX;
+      const deltaY = currentY - pullStartRef.current.y;
+      const deltaX = currentX - pullStartRef.current.x;
+
+      // Ignore horizontal scrolling
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        pullStartRef.current.tracking = false;
+        setPullDistance(0);
+        return;
+      }
+
+      if (deltaY > 0 && getScrollTop() <= 5) {
+        const dist = Math.min(80, deltaY * 0.45);
+        setPullDistance(dist);
+        if (e.cancelable && dist > 10) {
+          e.preventDefault();
+        }
+      } else {
+        setPullDistance(0);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!pullStartRef.current.tracking) return;
+      pullStartRef.current.tracking = false;
+
+      if (pullDistance >= 40 && !isRefreshing) {
+        triggerMobileRefresh();
+      } else {
+        setPullDistance(0);
+      }
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+    window.addEventListener('touchcancel', handleTouchEnd);
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, [isMobile, isRefreshing, pullDistance, triggerMobileRefresh]);
+
   if (isEmployeeMobile) {
     return (
       <div className="min-h-screen overflow-x-hidden bg-[#f4f7fb] pb-[100px]">
         <ScrollToTop />
+
+        {/* Floating Pull-to-Refresh Pill */}
+        {(pullDistance > 0 || isRefreshing) && (
+          <div
+            className={`fixed left-1/2 z-[130] -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full shadow-[0_12px_32px_rgba(15,23,42,0.2)] transition-all ${
+              pullDistance >= 40 || isRefreshing
+                ? isRefreshSuccess
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-teal-600 text-white'
+                : 'bg-white/95 text-slate-800 backdrop-blur-md border border-slate-200'
+            }`}
+            style={{
+              top: `${Math.min(130, 76 + pullDistance * 0.7)}px`,
+              opacity: pullDistance > 6 || isRefreshing ? 1 : 0,
+              transform: `translate(-50%, 0) scale(${Math.min(1, Math.max(0.85, pullDistance / 40))})`,
+              pointerEvents: 'none',
+            }}
+          >
+            {isRefreshing ? (
+              isRefreshSuccess ? (
+                <>
+                  <CheckCircle2 size={16} className="text-white" />
+                  <span className="text-xs font-black">Updated!</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={16} className="animate-spin text-white" />
+                  <span className="text-xs font-black">Refreshing...</span>
+                </>
+              )
+            ) : (
+              <>
+                <RefreshCw
+                  size={16}
+                  className={`transition-transform ${pullDistance >= 40 ? 'text-white' : 'text-teal-600'}`}
+                  style={{ transform: `rotate(${Math.min(360, (pullDistance / 40) * 360)}deg)` }}
+                />
+                <span className="text-xs font-black tracking-wide">
+                  {pullDistance >= 40 ? 'Release to refresh' : 'Pull down to refresh'}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
         <header className="fixed left-0 right-0 top-0 z-[110] bg-[#f4f7fb]/95 py-3 backdrop-blur-xl border-b border-slate-200/50">
           <div className="relative flex items-center justify-between px-4">
             <div className="flex min-w-0 items-center gap-3">

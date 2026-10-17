@@ -962,12 +962,9 @@ const TaDa = () => {
     return a === b || a.includes(b) || b.includes(a);
   };
 
-  // Pull-to-refresh state
-  const [pullDist, setPullDist] = useState(0);
-  const [isPulling, setIsPulling] = useState(false);
+  // Mobile Refresh state
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSuccess, setRefreshSuccess] = useState(false);
-  const touchStartRef = useRef({ x: 0, y: 0, tracking: false });
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -981,80 +978,18 @@ const TaDa = () => {
       toast.error('Failed to refresh data: ' + (e?.message || e));
     } finally {
       setRefreshing(false);
-      setTimeout(() => {
-        setPullDist(0);
-        setIsPulling(false);
-      }, 400);
     }
   };
 
   useEffect(() => {
-    const handleTouchStart = (e) => {
-      if (!e.touches || e.touches.length === 0) return;
-      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
-      if (scrollTop <= 10 && !refreshing) {
-        touchStartRef.current = {
-          x: e.touches[0].clientX,
-          y: e.touches[0].clientY,
-          tracking: true,
-        };
-      } else {
-        touchStartRef.current.tracking = false;
-      }
+    const onMobileRefresh = () => {
+      handleRefresh();
     };
-
-    const handleTouchMove = (e) => {
-      if (!touchStartRef.current.tracking || refreshing) return;
-
-      const currentY = e.touches[0].clientY;
-      const currentX = e.touches[0].clientX;
-      const deltaY = currentY - touchStartRef.current.y;
-      const deltaX = currentX - touchStartRef.current.x;
-
-      // Ignore horizontal swipes
-      if (Math.abs(deltaX) > Math.abs(deltaY)) {
-        touchStartRef.current.tracking = false;
-        setPullDist(0);
-        setIsPulling(false);
-        return;
-      }
-
-      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
-      if (deltaY > 0 && scrollTop <= 10) {
-        // Damped pull distance
-        const dist = Math.min(85, Math.pow(deltaY, 0.85) * 1.5);
-        setPullDist(dist);
-        setIsPulling(true);
-      } else {
-        setPullDist(0);
-        setIsPulling(false);
-      }
-    };
-
-    const handleTouchEnd = () => {
-      if (!touchStartRef.current.tracking) return;
-      touchStartRef.current.tracking = false;
-
-      if (pullDist >= 55 && !refreshing) {
-        setPullDist(55);
-        setIsPulling(false);
-        handleRefresh();
-      } else {
-        setPullDist(0);
-        setIsPulling(false);
-      }
-    };
-
-    window.addEventListener('touchstart', handleTouchStart, { passive: true });
-    window.addEventListener('touchmove', handleTouchMove, { passive: true });
-    window.addEventListener('touchend', handleTouchEnd);
-
+    window.addEventListener('hrms:mobile-refresh', onMobileRefresh);
     return () => {
-      window.removeEventListener('touchstart', handleTouchStart);
-      window.removeEventListener('touchmove', handleTouchMove);
-      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('hrms:mobile-refresh', onMobileRefresh);
     };
-  }, [refreshing, pullDist]);
+  }, []);
 
   const baseAllRows = useMemo(
     () => [...visitRows, ...travellingRows, ...advanceRows],
@@ -1446,42 +1381,6 @@ const TaDa = () => {
 
   return (
     <div className="space-y-5">
-      {/* Mobile Pull-to-Refresh Indicator */}
-      {(pullDist > 0 || refreshing) && (
-        <div
-          className="fixed left-1/2 z-[150] -translate-x-1/2 pointer-events-none transition-all duration-200"
-          style={{
-            top: `${Math.max(90, 84 + pullDist * 0.7)}px`,
-            opacity: pullDist > 15 || refreshing ? 1 : 0,
-            transform: `translate(-50%, 0) scale(${Math.min(1, Math.max(0.75, pullDist / 50))})`,
-          }}
-        >
-          <div className="flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-4 py-2 text-xs font-bold text-slate-800 shadow-2xl backdrop-blur-md dark:border-slate-700 dark:bg-slate-800/95 dark:text-slate-100 ring-1 ring-black/5">
-            {refreshSuccess ? (
-              <>
-                <Check size={16} className="text-emerald-500" strokeWidth={3} />
-                <span className="text-emerald-700 dark:text-emerald-400 font-extrabold">Data Refreshed!</span>
-              </>
-            ) : refreshing ? (
-              <>
-                <RefreshCw size={15} className="animate-spin text-teal-600" />
-                <span className="text-slate-700 dark:text-slate-200">Updating TA/DA...</span>
-              </>
-            ) : (
-              <>
-                <RefreshCw
-                  size={15}
-                  className="text-indigo-600 transition-transform duration-100"
-                  style={{ transform: `rotate(${Math.min(360, (pullDist / 55) * 360)}deg)` }}
-                />
-                <span className="text-slate-600 dark:text-slate-300">
-                  {pullDist >= 55 ? 'Release to refresh' : 'Pull down to refresh'}
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       <div className="relative z-[60] overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="h-1 bg-gradient-to-r from-indigo-600 via-sky-500 to-emerald-500" />

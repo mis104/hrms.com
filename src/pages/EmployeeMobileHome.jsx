@@ -608,12 +608,14 @@ const EmployeeMobileHome = () => {
     const intervalId = window.setInterval(refreshFeed, FEED_REFRESH_INTERVAL_MS);
     window.addEventListener('focus', refreshFeed);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('hrms:mobile-refresh', refreshFeed);
 
     return () => {
       isMounted = false;
       window.clearInterval(intervalId);
       window.removeEventListener('focus', refreshFeed);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('hrms:mobile-refresh', refreshFeed);
     };
   }, [initialFeedData.length]);
 
@@ -668,11 +670,13 @@ const EmployeeMobileHome = () => {
 
     window.addEventListener('focus', fetchAttendanceData);
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('hrms:mobile-refresh', fetchAttendanceData);
 
     return () => {
       isMounted = false;
       window.removeEventListener('focus', fetchAttendanceData);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('hrms:mobile-refresh', fetchAttendanceData);
     };
   }, [employeeName]);
 
