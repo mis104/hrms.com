@@ -2,12 +2,13 @@
 -- 🚀 PIRAMAL HRMS - COMPLETE 1-CLICK MASTER DATABASE SETUP FOR SUPABASE
 -- ==============================================================================
 -- Instructions:
--- 1. Open Supabase Dashboard -> SQL Editor
--- 2. Click "New query"
--- 3. Paste this ENTIRE script and click "Run"
--- 4. Result: All tables, columns, indexes, RLS security policies,
+-- 1. Open Supabase Dashboard (https://supabase.com/dashboard)
+-- 2. Go to your Project -> SQL Editor
+-- 3. Click "New query"
+-- 4. Paste this ENTIRE script and click "Run" (Ctrl + Enter)
+-- 5. Result: All 21 tables, columns, indexes, RLS security policies,
 --    and initial seed data (Admin user, HOD Matrix, Dropdowns, Templates)
---    will be created instantly!
+--    will be created / updated instantly!
 -- ==============================================================================
 
 -- ------------------------------------------------------------------------------
@@ -33,7 +34,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     name TEXT NOT NULL,
     username TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
-    admin TEXT DEFAULT 'No',                    -- 'Yes' or 'No'
+    admin TEXT DEFAULT 'No',                    -- 'Yes', 'No', or 'Employee'
     pages_access TEXT DEFAULT '',               -- Accessible modules
     manual TEXT DEFAULT 'No',                   -- Manual punch enabled
     profile TEXT,                               -- Cloudinary photo URL
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     time_in TEXT,                               -- e.g. '09:00 AM'
     time_out TEXT,                              -- e.g. '06:00 PM'
     category TEXT,
-    employee_status TEXT DEFAULT 'Active',      -- 'Active', 'Left'
+    employee_status TEXT DEFAULT 'Active',      -- 'Active', 'Left', 'Terminated'
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS public.attendance (
     timestampe TEXT,                            -- Legacy timestamp string
     date_and_time TEXT,
     end_date TEXT,
-    status TEXT,                                -- 'P', 'A', 'WO', 'HD', 'Present', etc.
+    status TEXT,                                -- 'P', 'A', 'WO', 'HD', 'PRESENT', etc.
     reason TEXT,
     latitude DOUBLE PRECISION,
     longitude DOUBLE PRECISION,
@@ -239,7 +240,7 @@ CREATE INDEX IF NOT EXISTS idx_leaving_fms_emp_id ON public.leaving_fms(employee
 CREATE INDEX IF NOT EXISTS idx_leaving_fms_name ON public.leaving_fms(candidate_name);
 
 -- ------------------------------------------------------------------------------
--- 6. LOCAL TRAVEL IN/OUT TABLE
+-- 6. LOCAL TRAVEL IN/OUT TABLE (LOCAL CONVEYANCE & VEHICLE RUNNING)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.travel_in_out (
     id BIGSERIAL PRIMARY KEY,
@@ -274,7 +275,68 @@ CREATE INDEX IF NOT EXISTS idx_travel_person ON public.travel_in_out(person_name
 CREATE INDEX IF NOT EXISTS idx_travel_return_date ON public.travel_in_out(return_date);
 
 -- ------------------------------------------------------------------------------
--- 7. RECRUITMENT FMS (INDENTS & OPEN VACANCIES)
+-- 7. OUTSTATION TRAVELING TABLE (TOUR, STAY, FOOD & TA/DA DETAILS)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.outstation_traveling (
+    id BIGSERIAL PRIMARY KEY,
+    serial_no TEXT,
+    timestamp TEXT,
+    name TEXT NOT NULL,
+    from_location TEXT,
+    to_location TEXT,
+    vehicle_type TEXT,
+    stay_date TEXT,
+    accommadation_type TEXT,
+    travel_date TEXT,
+    stay_bill TEXT,
+    fooding_date TEXT,
+    fooding_bill TEXT,
+    travel_receipt TEXT,
+    local_travel_type TEXT,
+    local_travel_receipt TEXT,
+    return_date TEXT,
+    return_ticket TEXT,
+    advance_amount TEXT,
+    status TEXT DEFAULT 'Pending',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_outstation_name ON public.outstation_traveling(name);
+CREATE INDEX IF NOT EXISTS idx_outstation_serial ON public.outstation_traveling(serial_no);
+
+-- ------------------------------------------------------------------------------
+-- 8. ADVANCE REQUESTS TABLE (EMPLOYEE TRAVEL & SALARY ADVANCE)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.advance (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TEXT,
+    serial_no TEXT,
+    person_name TEXT NOT NULL,
+    from_location TEXT,
+    to_location TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    travel_type TEXT,
+    advance NUMERIC DEFAULT 0,
+    company_name TEXT,
+    remarks TEXT,
+    planned TEXT,
+    actual TEXT,
+    delay TEXT,
+    status TEXT DEFAULT 'Pending',             -- 'Pending', 'Approved', 'Rejected'
+    remarks1 TEXT,
+    approved_by TEXT DEFAULT 'Neha Garg',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_advance_person ON public.advance(person_name);
+CREATE INDEX IF NOT EXISTS idx_advance_status ON public.advance(status);
+CREATE INDEX IF NOT EXISTS idx_advance_approved_by ON public.advance(approved_by);
+
+-- ------------------------------------------------------------------------------
+-- 9. RECRUITMENT FMS (INDENTS & OPEN VACANCIES)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.fms (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -325,7 +387,7 @@ CREATE INDEX IF NOT EXISTS idx_fms_indent_no ON public.fms(indent_no);
 CREATE INDEX IF NOT EXISTS idx_fms_status ON public.fms(position_status);
 
 -- ------------------------------------------------------------------------------
--- 8. CANDIDATE SELECTION (INTERVIEWS & CANDIDATE PIPELINE)
+-- 10. CANDIDATE SELECTION (INTERVIEWS & CANDIDATE PIPELINE)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.candidate_selection (
     id BIGSERIAL PRIMARY KEY,
@@ -382,7 +444,87 @@ CREATE INDEX IF NOT EXISTS idx_cand_selection_candidate_id ON public.candidate_s
 CREATE INDEX IF NOT EXISTS idx_cand_selection_name ON public.candidate_selection(name_of_candidate);
 
 -- ------------------------------------------------------------------------------
--- 9. DATA RESPONSE (PIPELINE STEP EVENT AUDIT)
+-- 11. CALLING & INTERVIEW TRACKING TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.calling_tracking (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TEXT,
+    task_id TEXT,
+    entry_by TEXT,
+    applicant_name TEXT NOT NULL,
+    contact_no TEXT,
+    role TEXT,
+    portal_used TEXT,
+    location TEXT,
+    stage TEXT,
+    notes TEXT,
+    feedback TEXT,
+    status TEXT,
+    interview_status TEXT,
+    interview_date TEXT,
+    attachment_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_calling_applicant ON public.calling_tracking(applicant_name);
+CREATE INDEX IF NOT EXISTS idx_calling_contact ON public.calling_tracking(contact_no);
+
+-- ------------------------------------------------------------------------------
+-- 12. FINAL CANDIDATE SELECTION TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.final_selection (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    salary TEXT,
+    dp TEXT,
+    indent_no TEXT,
+    candidate_id TEXT,
+    joining_date TEXT,
+    status TEXT DEFAULT 'Selected',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_final_selection_name ON public.final_selection(name);
+
+-- ------------------------------------------------------------------------------
+-- 13. CANDIDATE REFERENCE CHECK TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.reference (
+    id BIGSERIAL PRIMARY KEY,
+    date TEXT,
+    candidate_name TEXT NOT NULL,
+    ref_person_name TEXT,
+    number TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ------------------------------------------------------------------------------
+-- 14. COMPANY ASSETS ASSIGNMENT & RETURN TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.company_assets (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TEXT,
+    employee_name TEXT NOT NULL,
+    product TEXT,
+    asset_type TEXT,
+    quantity TEXT,
+    reason TEXT,
+    remark TEXT,
+    image TEXT,
+    return_date TEXT,
+    return_image TEXT,
+    return_remark TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_assets_emp ON public.company_assets(employee_name);
+
+-- ------------------------------------------------------------------------------
+-- 15. DATA RESPONSE (PIPELINE STEP EVENT AUDIT)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.data_response (
     id BIGSERIAL PRIMARY KEY,
@@ -414,7 +556,7 @@ CREATE INDEX IF NOT EXISTS idx_data_response_uid ON public.data_response(unique_
 CREATE INDEX IF NOT EXISTS idx_data_response_step ON public.data_response(step_code);
 
 -- ------------------------------------------------------------------------------
--- 10. ONBOARD AND STATUS (COMPANY UPDATES & FEED STORIES)
+-- 16. ONBOARD AND STATUS (COMPANY UPDATES & FEED STORIES)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.onboard_and_status (
     id BIGSERIAL PRIMARY KEY,
@@ -431,7 +573,7 @@ CREATE TABLE IF NOT EXISTS public.onboard_and_status (
 CREATE INDEX IF NOT EXISTS idx_onboard_status_date ON public.onboard_and_status(date);
 
 -- ------------------------------------------------------------------------------
--- 11. HOD MASTER (DEPARTMENT APPROVERS & WHATSAPP ROUTING)
+-- 17. HOD MASTER (DEPARTMENT APPROVERS & WHATSAPP ROUTING)
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.hod_master (
     id BIGSERIAL PRIMARY KEY,
@@ -453,15 +595,16 @@ CREATE TABLE IF NOT EXISTS public.hod_master (
 );
 
 CREATE INDEX IF NOT EXISTS idx_hod_dept ON public.hod_master(department);
+CREATE INDEX IF NOT EXISTS idx_hod_name ON public.hod_master(hod_name);
 
 -- ------------------------------------------------------------------------------
--- 12. WHATSAPP & SMS CONFIGURATION
+-- 18. WHATSAPP & SMS CONFIGURATION
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.whatsapp_settings (
     id BIGSERIAL PRIMARY KEY,
     active_provider TEXT DEFAULT 'maytapi',     -- 'maytapi' or 'meta'
     is_enabled BOOLEAN DEFAULT true,
-    sender_phone TEXT DEFAULT '+91 98765 43210',
+    sender_phone TEXT DEFAULT '+91 70899 35002',
     sender_name TEXT DEFAULT 'Piramal HRMS Alert',
     meta_waba_id TEXT,
     meta_phone_number_id TEXT,
@@ -481,7 +624,7 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_settings (
 );
 
 -- ------------------------------------------------------------------------------
--- 13. WHATSAPP & SMS DISPATCH LOGS
+-- 19. WHATSAPP & SMS DISPATCH LOGS
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.whatsapp_logs (
     id TEXT PRIMARY KEY,
@@ -500,7 +643,7 @@ CREATE INDEX IF NOT EXISTS idx_wa_logs_phone ON public.whatsapp_logs(recipient_p
 CREATE INDEX IF NOT EXISTS idx_wa_logs_event ON public.whatsapp_logs(event_type);
 
 -- ------------------------------------------------------------------------------
--- 14. WHATSAPP MESSAGE TEMPLATES
+-- 20. WHATSAPP MESSAGE TEMPLATES
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.whatsapp_templates (
     id TEXT PRIMARY KEY,
@@ -515,7 +658,7 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_templates (
 );
 
 -- ------------------------------------------------------------------------------
--- 15. MASTER DROPDOWNS TABLE
+-- 21. MASTER DROPDOWNS TABLE
 -- ------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.master_dropdowns (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -532,7 +675,7 @@ CREATE TABLE IF NOT EXISTS public.master_dropdowns (
 );
 
 -- ------------------------------------------------------------------------------
--- 16. ENABLE ROW LEVEL SECURITY (RLS) ON ALL TABLES
+-- 22. ENABLE ROW LEVEL SECURITY (RLS) ON ALL 21 TABLES
 -- ------------------------------------------------------------------------------
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.attendance ENABLE ROW LEVEL SECURITY;
@@ -540,8 +683,14 @@ ALTER TABLE public.leave_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.joining_fms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.leaving_fms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.travel_in_out ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.outstation_traveling ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.advance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.fms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.candidate_selection ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.calling_tracking ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.final_selection ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reference ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.company_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.data_response ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.onboard_and_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.hod_master ENABLE ROW LEVEL SECURITY;
@@ -551,16 +700,17 @@ ALTER TABLE public.whatsapp_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.master_dropdowns ENABLE ROW LEVEL SECURITY;
 
 -- ------------------------------------------------------------------------------
--- 17. CREATE OPEN ACCESS POLICIES FOR SUPABASE ANON / AUTH ROLES
+-- 23. CREATE OPEN ACCESS POLICIES FOR SUPABASE ANON / AUTH ROLES
 -- ------------------------------------------------------------------------------
 DO $$
 DECLARE
     tbl text;
     tables_list text[] := ARRAY[
         'users', 'attendance', 'leave_requests', 'joining_fms', 'leaving_fms',
-        'travel_in_out', 'fms', 'candidate_selection', 'data_response',
-        'onboard_and_status', 'hod_master', 'whatsapp_settings', 'whatsapp_logs',
-        'whatsapp_templates', 'master_dropdowns'
+        'travel_in_out', 'outstation_traveling', 'advance', 'fms',
+        'candidate_selection', 'calling_tracking', 'final_selection', 'reference',
+        'company_assets', 'data_response', 'onboard_and_status', 'hod_master',
+        'whatsapp_settings', 'whatsapp_logs', 'whatsapp_templates', 'master_dropdowns'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables_list LOOP
@@ -574,16 +724,17 @@ END $$;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
 
 -- ------------------------------------------------------------------------------
--- 18. ATTACH AUTO-UPDATE TIMESTAMP TRIGGERS
+-- 24. ATTACH AUTO-UPDATE TIMESTAMP TRIGGERS
 -- ------------------------------------------------------------------------------
 DO $$
 DECLARE
     tbl text;
     tables_with_updated_at text[] := ARRAY[
         'users', 'attendance', 'leave_requests', 'joining_fms', 'leaving_fms',
-        'travel_in_out', 'fms', 'candidate_selection', 'data_response',
-        'onboard_and_status', 'hod_master', 'whatsapp_settings', 'whatsapp_templates',
-        'master_dropdowns'
+        'travel_in_out', 'outstation_traveling', 'advance', 'fms',
+        'candidate_selection', 'calling_tracking', 'final_selection', 'reference',
+        'company_assets', 'data_response', 'onboard_and_status', 'hod_master',
+        'whatsapp_settings', 'whatsapp_templates', 'master_dropdowns'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables_with_updated_at LOOP
@@ -593,7 +744,7 @@ BEGIN
 END $$;
 
 -- ==============================================================================
--- 19. INITIAL SEED DATA (CLONE-READY DEFAULT CONFIGURATIONS)
+-- 25. INITIAL SEED DATA (CLONE-READY DEFAULT CONFIGURATIONS)
 -- ==============================================================================
 
 -- 1. Default Super Admin User (admin / 123)
@@ -609,17 +760,16 @@ VALUES (
 )
 ON CONFLICT (username) DO NOTHING;
 
--- 2. Default HOD Approvers Matrix
+-- 2. Default HOD Approvers Matrix (Including Neha Garg as default Approver)
 INSERT INTO public.hod_master (department, hod_name, phone_number, hod_phone, approval_types, send_sms, send_whatsapp, status)
 VALUES
+    ('Sales Head', 'Neha Garg', '9201958125,8982944569,9201959189', '9201958125,8982944569,9201959189', ARRAY['Leave Application', 'Advance Request'], true, true, 'Active'),
+    ('Sales', 'Neha Garg', '9201958125,8982944569,9201959189', '9201958125,8982944569,9201959189', ARRAY['Leave Application', 'Advance Request'], true, true, 'Active'),
     ('Sales Head', 'Vaibhav Agrawal', '9329121512', '9329121512', ARRAY['Leave Application'], true, true, 'Active'),
     ('MDO', 'Varsha Pandey', '9201959184,9203401731,9201959189', '9201959184,9203401731,9201959189', ARRAY['Leave Application'], true, true, 'Active'),
     ('Directors', 'Varsha Pandey', '9201959189', '9201959189', ARRAY['Leave Application'], true, true, 'Active'),
     ('Accounts', 'Satbeer SIngh', '9201959184,9203401731,8982944569', '9201959184,9203401731,8982944569', ARRAY['Leave Application'], true, true, 'Active'),
-    ('Plants', 'Rahul Sir', '9993831316,90981973958,8871030498', '9993831316,90981973958,8871030498', ARRAY['Leave Application'], true, true, 'Active'),
-    ('Sales', 'Neha Garg', '9201959184,9203401731,8982944569', '9201959184,9203401731,8982944569', ARRAY['Leave Application'], true, true, 'Active'),
-    ('Sales Head', 'Neha Garg', '9201958125,8982944569,9201959189', '9201958125,8982944569,9201959189', ARRAY['Leave Application'], true, true, 'Active'),
-    ('Sales Head', 'Advance Approval Confirmation', '9201958125,9321691120', '9201958125,9321691120', ARRAY['Advance Request'], true, true, 'Active')
+    ('Plants', 'Rahul Sir', '9993831316,90981973958,8871030498', '9993831316,90981973958,8871030498', ARRAY['Leave Application'], true, true, 'Active')
 ON CONFLICT DO NOTHING;
 
 -- 3. Default WhatsApp Gateway Configuration (Maytapi Ready)
@@ -642,9 +792,11 @@ VALUES (
     true,
     true
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET
+    sender_phone = EXCLUDED.sender_phone,
+    sender_name = EXCLUDED.sender_name;
 
--- 4. Default WhatsApp Templates
+-- 4. Default WhatsApp Message Templates
 INSERT INTO public.whatsapp_templates (id, name, category, trigger_event, provider, body, is_active)
 VALUES
     (
