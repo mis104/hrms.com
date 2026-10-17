@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { Home, Clock, CalendarRange, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import useAuthStore from '../store/authStore';
+import { getUserRole } from '../utils/authRole';
 
 const MobileBottomNav = () => {
   const { user } = useAuthStore();
@@ -16,7 +17,8 @@ const MobileBottomNav = () => {
   })();
   const currentUser = user || storedUser;
   
-  const homePath = currentUser?.role === 'employee' || currentUser?.Admin === 'No' ? '/employee-mobile' : '/';
+  const isEmployee = getUserRole(currentUser) === 'employee';
+  const homePath = isEmployee ? '/employee-mobile' : '/';
 
   const navItems = [
     { id: 'home', path: homePath, icon: Home, label: 'Home' },
@@ -33,7 +35,9 @@ const MobileBottomNav = () => {
       <div className="relative flex justify-between items-center px-4 py-2 pb-5">
         {navItems.map((item) => {
           const Icon = item.icon;
-          const isActive = location.pathname === item.path || (item.path === '/my-attendance' && location.pathname === '/mark-attendance');
+          const isActive = location.pathname === item.path ||
+            (item.id === 'home' && (location.pathname === '/' || location.pathname === '/employee-mobile')) ||
+            (item.path === '/my-attendance' && location.pathname === '/mark-attendance');
           
           return (
             <NavLink

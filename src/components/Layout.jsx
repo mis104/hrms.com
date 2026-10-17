@@ -62,7 +62,9 @@ const Layout = () => {
   const { user, logout } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
+  );
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('hrms-theme') === 'dark');
   const [showNotificationMenu, setShowNotificationMenu] = useState(false);
   const notificationMenuRef = React.useRef(null);
@@ -290,11 +292,11 @@ const Layout = () => {
   }, [isDarkMode]);
 
   if (isEmployee && location.pathname === '/') {
-    return <Navigate to={isMobile ? "/employee-mobile" : "/my-attendance"} replace />;
+    return <Navigate to="/employee-mobile" replace />;
   }
 
   if (isEmployee && !employeeAllowedPaths.includes(location.pathname)) {
-    return <Navigate to={isMobile ? "/employee-mobile" : "/my-attendance"} replace />;
+    return <Navigate to="/employee-mobile" replace />;
   }
 
   if (isEmployeeMobile) {

@@ -30,6 +30,8 @@ import toast from 'react-hot-toast';
 import { supabase } from '../services/supabaseClient';
 import AdvanceRequest from './AdvanceRequest';
 import { triggerAdvanceProcessedNotification } from '../services/whatsappService';
+import useAuthStore from '../store/authStore';
+import { getUserRole } from '../utils/authRole';
 
 // ==========================================
 // ENHANCED SEARCHABLE MULTI-SELECT DROPDOWN
@@ -931,12 +933,151 @@ const TaDa = () => {
     fetchTaDaData();
   }, []);
 
-  const allRows = useMemo(() => [...visitRows, ...travellingRows, ...advanceRows], [visitRows, travellingRows, advanceRows]);
-  const activeRows = activeTab === 'fms'
-    ? visitRows
-    : activeTab === 'travelling'
-      ? travellingRows
-      : advanceRows;
+  const { user: authUser } = useAuthStore();
+  const storedUser = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem('user') || '{}');
+    } catch {
+      return {};
+    }
+  }, []);
+  const currentUser = authUser || storedUser;
+  const currentRole = getUserRole(currentUser || {});
+  const isAdmin = currentRole === 'admin';
+  const currentUserName = (
+    currentUser?.Name ||
+    currentUser?.name ||
+    currentUser?._displayName ||
+    currentUser?.displayName ||
+    ''
+  ).trim();
+
+  const normalizeName = (val) => String(val || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const isOwnRecord = (itemEmployeeName, userName) => {
+    if (!userName) return true;
+    const a = normalizeName(itemEmployeeName);
+    const b = normalizeName(userName);
+    if (!a || !b) return false;
+    return a === b || a.includes(b) || b.includes(a);
+  };
+
+  // Pull-to-refresh state
+  const [pullDist, setPullDist] = useState(0);
+  const [isPulling, setIsPulling] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshSuccess, setRefreshSuccess] = useState(false);
+  const touchStartRef = useRef({ x: 0, y: 0, tracking: false });
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshSuccess(false);
+    try {
+      await fetchTaDaData();
+      setRefreshSuccess(true);
+      setTimeout(() => setRefreshSuccess(false), 1200);
+      toast.success('TA/DA data refreshed!');
+    } catch (e) {
+      toast.error('Failed to refresh data: ' + (e?.message || e));
+    } finally {
+      setRefreshing(false);
+      setTimeout(() => {
+        setPullDist(0);
+        setIsPulling(false);
+      }, 400);
+    }
+  };
+
+  useEffect(() => {
+    const handleTouchStart = (e) => {
+      if (!e.touches || e.touches.length === 0) return;
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      if (scrollTop <= 10 && !refreshing) {
+        touchStartRef.current = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          tracking: true,
+        };
+      } else {
+        touchStartRef.current.tracking = false;
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (!touchStartRef.current.tracking || refreshing) return;
+
+      const currentY = e.touches[0].clientY;
+      const currentX = e.touches[0].clientX;
+      const deltaY = currentY - touchStartRef.current.y;
+      const deltaX = currentX - touchStartRef.current.x;
+
+      // Ignore horizontal swipes
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        touchStartRef.current.tracking = false;
+        setPullDist(0);
+        setIsPulling(false);
+        return;
+      }
+
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      if (deltaY > 0 && scrollTop <= 10) {
+        // Damped pull distance
+        const dist = Math.min(85, Math.pow(deltaY, 0.85) * 1.5);
+        setPullDist(dist);
+        setIsPulling(true);
+      } else {
+        setPullDist(0);
+        setIsPulling(false);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (!touchStartRef.current.tracking) return;
+      touchStartRef.current.tracking = false;
+
+      if (pullDist >= 55 && !refreshing) {
+        setPullDist(55);
+        setIsPulling(false);
+        handleRefresh();
+      } else {
+        setPullDist(0);
+        setIsPulling(false);
+      }
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    window.addEventListener('touchend', handleTouchEnd);
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [refreshing, pullDist]);
+
+  const baseAllRows = useMemo(
+    () => [...visitRows, ...travellingRows, ...advanceRows],
+    [visitRows, travellingRows, advanceRows]
+  );
+
+  const allRows = useMemo(() => {
+    if (isAdmin || !currentUserName) return baseAllRows;
+    return baseAllRows.filter((item) => isOwnRecord(item.employeeName, currentUserName));
+  }, [baseAllRows, isAdmin, currentUserName]);
+
+  const baseActiveRows = useMemo(() => {
+    return activeTab === 'fms'
+      ? visitRows
+      : activeTab === 'travelling'
+        ? travellingRows
+        : advanceRows;
+  }, [activeTab, visitRows, travellingRows, advanceRows]);
+
+  const activeRows = useMemo(() => {
+    if (isAdmin || !currentUserName) return baseActiveRows;
+    return baseActiveRows.filter((item) => isOwnRecord(item.employeeName, currentUserName));
+  }, [baseActiveRows, isAdmin, currentUserName]);
 
   const employeeOptions = useMemo(
     () => [...new Set(
@@ -1305,6 +1446,43 @@ const TaDa = () => {
 
   return (
     <div className="space-y-5">
+      {/* Mobile Pull-to-Refresh Indicator */}
+      {(pullDist > 0 || refreshing) && (
+        <div
+          className="fixed left-1/2 z-[150] -translate-x-1/2 pointer-events-none transition-all duration-200"
+          style={{
+            top: `${Math.max(90, 84 + pullDist * 0.7)}px`,
+            opacity: pullDist > 15 || refreshing ? 1 : 0,
+            transform: `translate(-50%, 0) scale(${Math.min(1, Math.max(0.75, pullDist / 50))})`,
+          }}
+        >
+          <div className="flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-4 py-2 text-xs font-bold text-slate-800 shadow-2xl backdrop-blur-md dark:border-slate-700 dark:bg-slate-800/95 dark:text-slate-100 ring-1 ring-black/5">
+            {refreshSuccess ? (
+              <>
+                <Check size={16} className="text-emerald-500" strokeWidth={3} />
+                <span className="text-emerald-700 dark:text-emerald-400 font-extrabold">Data Refreshed!</span>
+              </>
+            ) : refreshing ? (
+              <>
+                <RefreshCw size={15} className="animate-spin text-teal-600" />
+                <span className="text-slate-700 dark:text-slate-200">Updating TA/DA...</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw
+                  size={15}
+                  className="text-indigo-600 transition-transform duration-100"
+                  style={{ transform: `rotate(${Math.min(360, (pullDist / 55) * 360)}deg)` }}
+                />
+                <span className="text-slate-600 dark:text-slate-300">
+                  {pullDist >= 55 ? 'Release to refresh' : 'Pull down to refresh'}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="relative z-[60] overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="h-1 bg-gradient-to-r from-indigo-600 via-sky-500 to-emerald-500" />
         <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
@@ -1490,37 +1668,53 @@ const TaDa = () => {
             </div>
             <div>
               <h2 className="text-base font-black uppercase tracking-wide text-slate-800">Filters</h2>
-              <p className="text-xs font-semibold text-slate-400">Employee, month, year aur route search</p>
+              <p className="text-xs font-semibold text-slate-400">
+                {!isAdmin && currentUserName ? `Showing records for: ${currentUserName}` : 'Employee, month, year aur route search'}
+              </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={clearFilters}
-            className="rounded-full border border-indigo-200 px-4 py-2 text-sm font-bold text-indigo-700 transition hover:bg-indigo-50"
-          >
-            Clear filters
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing || loading}
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 cursor-pointer shadow-xs"
+              title="Refresh data"
+            >
+              <RefreshCw size={13} className={refreshing || loading ? 'animate-spin text-teal-600' : 'text-slate-500'} />
+              <span>Refresh</span>
+            </button>
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="rounded-full border border-indigo-200 px-4 py-2 text-sm font-bold text-indigo-700 transition hover:bg-indigo-50"
+            >
+              Clear filters
+            </button>
+          </div>
         </div>
 
-        <div className={`grid gap-3 ${activeTab === 'fms' ? 'lg:grid-cols-[1.4fr_1fr_0.9fr_0.75fr_0.65fr]' : 'lg:grid-cols-[1.5fr_1fr_0.75fr_0.65fr]'}`}>
+        <div className={`grid gap-3 ${activeTab === 'fms' ? (isAdmin ? 'lg:grid-cols-[1.4fr_1fr_0.9fr_0.75fr_0.65fr]' : 'lg:grid-cols-[1.6fr_1fr_0.8fr_0.7fr]') : (isAdmin ? 'lg:grid-cols-[1.5fr_1fr_0.75fr_0.65fr]' : 'lg:grid-cols-[2fr_1fr_0.8fr]')}`}>
           <label className="relative block">
             <Search size={18} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Search by employee, route, date, vehicle..."
+              placeholder="Search by route, date, vehicle, remarks..."
               className="h-12 w-full rounded-xl border border-slate-300 bg-white pl-12 pr-4 text-sm font-semibold text-slate-700 outline-none transition hover:border-slate-400 focus:border-navy focus:ring-4 focus:ring-indigo-100"
             />
           </label>
 
-          <SearchableSelect
-            icon={User}
-            value={employeeFilter}
-            onChange={setEmployeeFilter}
-            options={employeeOptions}
-            allLabel="All Employees"
-            placeholder="Search employee..."
-          />
+          {isAdmin && (
+            <SearchableSelect
+              icon={User}
+              value={employeeFilter}
+              onChange={setEmployeeFilter}
+              options={employeeOptions}
+              allLabel="All Employees"
+              placeholder="Search employee..."
+            />
+          )}
 
           {activeTab === 'fms' && (
             <SearchableSelect

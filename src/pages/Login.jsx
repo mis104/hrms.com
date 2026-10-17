@@ -23,7 +23,7 @@ const resolveTargetRoute = (matchedUser) => {
   const userRole = getUserRole(matchedUser);
 
   if (userRole === "admin") return "/";
-  if (userRole === "employee" && isMobileViewport()) return "/employee-mobile";
+  if (userRole === "employee") return "/employee-mobile";
 
   const pageAccess = matchedUser["Pages Access"] || matchedUser.pages_access || "";
   if (!pageAccess) return userRole === "recruiter" ? "/indent" : "/my-profile";

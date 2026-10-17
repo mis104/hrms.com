@@ -30,7 +30,8 @@ import {
   X,
   Car,
   Route,
-  CreditCard
+  CreditCard,
+  FileSpreadsheet
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import useAuthStore from '../store/authStore';
@@ -782,6 +783,7 @@ const EmployeeMobileHome = () => {
     { icon: Car, label: 'Local Travel', path: '/local-travel', badge: activeTravelRow ? '1 Active' : null, iconClass: 'bg-violet-50 text-violet-700 ring-violet-100' },
     { icon: Route, label: 'Out Station Travel', path: '/outstation-travel', iconClass: 'bg-sky-50 text-sky-700 ring-sky-100' },
     { icon: CreditCard, label: 'Advance', path: '/advance-request', iconClass: 'bg-teal-50 text-teal-700 ring-teal-100' },
+    { icon: FileSpreadsheet, label: 'TA & DA Report', path: '/ta-da', iconClass: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
     { icon: Wallet, label: 'New System Development', externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSfbs_I-HzZT2miZUS6Aacvu6qd5vxkkD12Of_QjOKEnEZkphg/viewform?usp=header', path: '/employee-mobile', iconClass: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
     { icon: ClipboardList, label: 'HR Records', path: '/my-attendance', iconClass: 'bg-indigo-50 text-indigo-700 ring-indigo-100' },
     { icon: Fingerprint, label: 'Mark Attendance', path: '/mark-attendance', iconClass: 'bg-blue-50 text-blue-700 ring-blue-100' },
