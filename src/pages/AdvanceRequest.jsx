@@ -192,7 +192,7 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
         advance: payload.advance,
         companyName: payload.company_name,
         remarks: payload.remarks,
-        approvedLink: `${getAppBaseUrl()}/quick-advance?serial=${encodeURIComponent(nextSerial)}&id=${data?.[0]?.id}`,
+        approvedLink: `${getAppBaseUrl()}/quick-advance?lr=${encodeURIComponent(nextSerial)}&id=${data?.[0]?.id}`,
         department: employeeDept || user.department || "Sales Head",
       }).catch((err) => {
         console.warn("Advance notification dispatch notice:", err);

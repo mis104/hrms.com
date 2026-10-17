@@ -19,12 +19,14 @@ const QuickAdvanceAction = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const advanceId = searchParams.get('id');
-  const serialNo = searchParams.get('serial') || searchParams.get('sr') || searchParams.get('sn');
+  const serialNo = searchParams.get('serial') || searchParams.get('lr') || searchParams.get('sr') || searchParams.get('sn');
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [advance, setAdvance] = useState(null);
-  const [approverName, setApproverName] = useState('Approver');
+  const [approverName, setApproverName] = useState(
+    searchParams.get('approver') || searchParams.get('by') || 'Neha Garg'
+  );
   const [remarks, setRemarks] = useState('');
   const [completed, setCompleted] = useState(false);
   const [finalStatus, setFinalStatus] = useState('');
@@ -86,7 +88,7 @@ const QuickAdvanceAction = () => {
         .update({
           status: status,
           remarks1: remarks.trim() || status,
-          approved_by: approverName.trim() || 'Approver',
+          approved_by: approverName.trim() || 'Neha Garg',
           actual: actualTimestamp,
         })
         .eq('id', advance.id);
@@ -100,7 +102,7 @@ const QuickAdvanceAction = () => {
         ...prev,
         status: status,
         remarks1: remarks.trim() || status,
-        approved_by: approverName.trim() || 'Approver',
+        approved_by: approverName.trim() || 'Neha Garg',
       }));
     } catch (err) {
       console.error('Advance action error:', err);
@@ -263,7 +265,7 @@ const QuickAdvanceAction = () => {
                   type="text"
                   value={approverName}
                   onChange={(e) => setApproverName(e.target.value)}
-                  placeholder="Enter your name"
+                  placeholder="Neha Garg"
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"
                 />
               </div>

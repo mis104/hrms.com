@@ -709,9 +709,11 @@ Dear ${item.name || "HOD Approver"} 👋😊,
 
 📝 *Remarks:* ${remarks || "N/A"}
 
-🔗 *LINK:* ${link}
+🕘 An advance request has been submitted for your approval.  
+Please review and approve using the link below 👇
 
-⚡📞Please review and take necessary action.
+👉 *1-Click Approval Link:*
+${link}
 
 🙏🤝Best regards,
 🏢 Piramal Petroleum Pvt. Ltd.`;
