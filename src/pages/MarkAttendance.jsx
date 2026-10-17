@@ -149,7 +149,9 @@ const formatTimeValue = (value) => {
 
 const dateKey = (date) => {
   if (!date) return "";
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const d = date instanceof Date ? date : parseDateToObj(date);
+  if (!d) return "";
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 };
 
 const getStoredUser = () => {
@@ -486,27 +488,33 @@ const MarkAttendance = () => {
 
     try {
       let rawAttendance = [];
+      let masterRows = [];
 
       let attQuery = supabase
         .from("attendance")
-        .select("person_name, date_and_time, timestampe, status, map_link, address")
-        .order("id", { ascending: false });
+        .select("person_name, date_and_time, timestampe, date, time, status, map_link, address")
+        .order("created_at", { ascending: false });
 
       if (punchPersonName) {
-        attQuery = attQuery.ilike("person_name", `%${punchPersonName}%`);
-      } else {
-        attQuery = attQuery.limit(500);
+        attQuery = attQuery.ilike("person_name", `%${punchPersonName.trim()}%`);
+      }
+      attQuery = attQuery.limit(20);
+
+      let userQuery = supabase
+        .from("users")
+        .select("name, username, latitude, longitude, range, time_in, time_out, employee_type, category");
+
+      if (punchPersonName) {
+        userQuery = userQuery.or(`name.ilike.%${punchPersonName.trim()}%,username.ilike.%${punchPersonName.trim()}%`);
       }
 
       const [supaAttRes, supaUsersRes] = await Promise.all([
         attQuery,
-        supabase
-          .from("users")
-          .select("name, username, latitude, longitude, range, time_in, time_out, employee_type, category"),
+        userQuery,
       ]);
 
       if (!supaUsersRes.error && supaUsersRes.data && supaUsersRes.data.length > 0) {
-        const masterRows = supaUsersRes.data.map((u) => ({
+        masterRows = supaUsersRes.data.map((u) => ({
           personName: u.name || "",
           username: u.username || "",
           role: "",
@@ -519,18 +527,32 @@ const MarkAttendance = () => {
         writeCache(MARK_ATTENDANCE_MASTER_CACHE_KEY, masterRows);
         setMasterUsers(masterRows);
         setInitialFetchDone(true);
+      } else if (cachedMasterUsers && cachedMasterUsers.length > 0) {
+        masterRows = cachedMasterUsers;
+        setInitialFetchDone(true);
       }
 
-      if (!supaAttRes.error && supaAttRes.data && supaAttRes.data.length > 0) {
-        rawAttendance = supaAttRes.data.map((r) => {
+      let attData = (!supaAttRes.error && supaAttRes.data) ? supaAttRes.data : [];
+      if (attData.length === 0 && punchPersonName) {
+        const fallbackRes = await supabase
+          .from("attendance")
+          .select("person_name, date_and_time, timestampe, date, time, status, map_link, address")
+          .order("created_at", { ascending: false })
+          .limit(20);
+        attData = fallbackRes.data || [];
+      }
+
+      if (attData.length > 0) {
+        rawAttendance = attData.map((r) => {
           const statusStr = (r.status || "").toString().trim().toUpperCase();
-          const dt = r.date_and_time || r.timestampe || "";
+          const dt = r.date_and_time || r.timestampe || r.date || "";
           return {
             personName: r.person_name || "",
             dateTime: dt,
             inDate: statusStr === "IN" ? dt : "",
             outDate: statusStr === "OUT" ? dt : "",
             status: statusStr,
+            time: r.time || "",
             mapLink: r.map_link || "",
             address: r.address || "",
           };
@@ -553,7 +575,7 @@ const MarkAttendance = () => {
           status,
           dateObj,
           date: formatDateValue(dateValue),
-          time: formatTimeValue(dateValue),
+          time: formatTimeValue(entry.time || dateValue),
           mapLink: entry.mapLink || "",
           address: entry.address || "",
         });
@@ -583,6 +605,7 @@ const MarkAttendance = () => {
       entries.push(...uniqueUnsynced);
 
       // Now build the grouped data from the merged entries
+      const grouped = {};
       entries.forEach((entry) => {
         const key = `${normalize(entry.employeeName)}_${dateKey(entry.dateObj)}`;
         if (!grouped[key]) {
@@ -601,13 +624,17 @@ const MarkAttendance = () => {
         }
 
         if (entry.status === "IN") {
-          grouped[key].inTime = entry.time;
+          if (!grouped[key].inTime || (entry.time && entry.time < grouped[key].inTime)) {
+            grouped[key].inTime = entry.time;
+          }
           grouped[key].mapLink = entry.mapLink || grouped[key].mapLink;
           grouped[key].address = entry.address || grouped[key].address;
         }
 
         if (entry.status === "OUT") {
-          grouped[key].outTime = entry.time;
+          if (!grouped[key].outTime || (entry.time && entry.time > grouped[key].outTime)) {
+            grouped[key].outTime = entry.time;
+          }
           grouped[key].mapLink = entry.mapLink || grouped[key].mapLink;
           grouped[key].address = entry.address || grouped[key].address;
         }
@@ -616,10 +643,12 @@ const MarkAttendance = () => {
       const processed = Object.values(grouped).sort((a, b) => b.dateObj - a.dateObj);
       const sortedEntries = entries.sort((a, b) => b.dateObj - a.dateObj);
       writeCache(MARK_ATTENDANCE_DATA_CACHE_KEY, { attendanceData: processed, rawEntries: sortedEntries });
-      writeCache(MARK_ATTENDANCE_MASTER_CACHE_KEY, masterRows);
+      if (masterRows.length > 0) {
+        writeCache(MARK_ATTENDANCE_MASTER_CACHE_KEY, masterRows);
+        setMasterUsers(masterRows);
+      }
       setAttendanceData(processed);
       setRawEntries(sortedEntries);
-      setMasterUsers(masterRows);
     } catch (err) {
       console.error("Mark attendance fetch error:", err);
       setError(err.message);
