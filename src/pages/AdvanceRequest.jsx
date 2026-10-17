@@ -18,6 +18,7 @@ import {
 import toast from 'react-hot-toast';
 import { supabase } from '../services/supabaseClient';
 import { triggerAdvanceRequestNotification } from '../services/whatsappService';
+import { getAppBaseUrl } from '../utils/urlHelper';
 
 const AdvanceRequest = ({ isModal = false, onClose }) => {
   const navigate = useNavigate();
@@ -191,7 +192,7 @@ const AdvanceRequest = ({ isModal = false, onClose }) => {
         advance: payload.advance,
         companyName: payload.company_name,
         remarks: payload.remarks,
-        approvedLink: `${window.location.origin}/ta-da?tab=advance`,
+        approvedLink: `${getAppBaseUrl()}/quick-advance?serial=${encodeURIComponent(nextSerial)}&id=${data?.[0]?.id}`,
         department: employeeDept || user.department || "Sales Head",
       }).catch((err) => {
         console.warn("Advance notification dispatch notice:", err);

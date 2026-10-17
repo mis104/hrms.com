@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseClient";
+import { getAppBaseUrl, sanitizePortalUrl } from "../utils/urlHelper";
 
 /**
  * Universal Auto-Trigger WhatsApp Notification Service with Supabase Database Persistence
@@ -263,8 +264,8 @@ export const triggerLeaveRequestNotification = async ({
   const config = await getWhatsAppConfig();
   if (config.autoSendOnLeaveRequest === false && config.auto_send_on_leave_request === false) return [];
 
-  const baseUrl = import.meta.env.VITE_APP_URL || (typeof window !== "undefined" ? window.location.origin : "");
-  const link = approvalLink || `${baseUrl}/leave-management`;
+  const baseUrl = getAppBaseUrl();
+  const link = sanitizePortalUrl(approvalLink, "/leave-management");
   const finalLrNo = lrNo || "LR-REQ";
   const targetDept = (department || designation || "").trim();
 
@@ -590,7 +591,7 @@ export const notifyHodsForApproval = async ({
 📝 *Details:* ${details}
 
 👉 *Action Required:* Please review and take action.
-🔗 *Approval Link:* ${approvalLink || window.location.origin}
+🔗 *Approval Link:* ${sanitizePortalUrl(approvalLink, "/")}
 
 _Piramal Petroleum HRMS_`;
 
@@ -678,7 +679,7 @@ export const triggerAdvanceRequestNotification = async ({
     });
   }
 
-  const link = approvedLink || `${window.location.origin}/ta-da?tab=advance`;
+  const link = sanitizePortalUrl(approvedLink, "/quick-advance");
 
   const results = [];
   const uniquePhones = new Set();

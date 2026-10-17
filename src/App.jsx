@@ -64,6 +64,7 @@ import FeedManagement from "./pages/FeedManagement";
 import ModulePlaceholder from "./pages/ModulePlaceholder";
 import { placeholderRoutes } from "./config/hrModules";
 import QuickLeaveAction from "./pages/QuickLeaveAction";
+import QuickAdvanceAction from "./pages/QuickAdvanceAction";
 import WhatsappService from "./pages/WhatsappService";
 import LocalTravel from "./pages/LocalTravel";
 import OutstationTravel from "./pages/OutstationTravel";
@@ -78,6 +79,8 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/quick-leave" element={<QuickLeaveAction />} />
           <Route path="/leave-action" element={<QuickLeaveAction />} />
+          <Route path="/quick-advance" element={<QuickAdvanceAction />} />
+          <Route path="/advance-action" element={<QuickAdvanceAction />} />
 
 
           <Route

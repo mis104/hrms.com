@@ -40,6 +40,7 @@ import {
 import toast from "react-hot-toast";
 import { supabase } from "../services/supabaseClient";
 import { sendWhatsAppMessage } from "../services/whatsappService";
+import { getAppBaseUrl } from "../utils/urlHelper";
 
 const DEFAULT_TEMPLATES = [
   {
@@ -244,7 +245,7 @@ export const formatTemplatePreview = (text, customData = {}) => {
     "\\$\\(Total No of leaves days\\)": customData.days || "3 Days",
     "\\$\\(Reason for Taking Leave\\)": customData.reason || "Personal Family Function",
     "\\$\\(Remark\\)": customData.remark || "Please approve urgent leave",
-    "\\$\\(Approved Link\\)": customData.approvalLink || `${window.location.origin}/leave-management`,
+    "\\$\\(Approved Link\\)": customData.approvalLink || `${getAppBaseUrl()}/leave-management`,
     "\\$\\(Status\\)": customData.status || "Approved",
     "\\$\\(Approved By\\)": customData.approvedBy || "HR Head",
 
@@ -257,7 +258,7 @@ export const formatTemplatePreview = (text, customData = {}) => {
     "{interview_date}": customData.interviewDate || "12-10-2026",
     "{interview_time}": customData.interviewTime || "11:00 AM",
     "{interview_venue}": customData.interviewVenue || "Plant Conference Hall / Google Meet",
-    "{portal_url}": customData.portalUrl || `${window.location.origin}/leave-management`,
+    "{portal_url}": customData.portalUrl || `${getAppBaseUrl()}/leave-management`,
     "{broadcast_message}": customData.broadcastMessage || "Kindly ensure that biometric attendance is registered daily.",
     "{leave_type}": customData.leaveType || "Casual Leave",
     "{start_date}": customData.fromDate || "15-10-2026",
@@ -698,7 +699,7 @@ const WhatsappService = () => {
           .replace(/{pass_id}/g, "GP-9012")
           .replace(/{employee_id}/g, "EMP-" + Math.floor(1000 + Math.random() * 9000))
           .replace(/{broadcast_message}/g, "Please note that all staff must update their biometric IDs by this Friday.")
-          .replace(/{portal_url}/g, window.location.origin);
+          .replace(/{portal_url}/g, getAppBaseUrl());
 
         const dispatchRes = await sendWhatsAppMessage({
           to: phone,
@@ -1058,7 +1059,7 @@ const WhatsappService = () => {
                         .replace(/{end_date}/g, "16/10/2026")
                         .replace(/{days}/g, "2")
                         .replace(/{reason}/g, "Personal urgent work")
-                        .replace(/{portal_url}/g, "https://hrms.piramal.com")
+                        .replace(/{portal_url}/g, getAppBaseUrl())
                       }
                     </p>
                     <div className="flex items-center justify-end gap-1 mt-1 text-[9px] text-slate-500">

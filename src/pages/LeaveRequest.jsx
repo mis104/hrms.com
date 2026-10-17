@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import { fetchLeaveRequests, createLeaveRequest, supabase } from '../services/supabaseService';
 import { triggerLeaveRequestNotification } from '../services/whatsappService';
+import { getAppBaseUrl } from '../utils/urlHelper';
 
 const LEAVE_PAGE_SIZE = 50;
 
@@ -466,7 +467,7 @@ const LeaveRequest = () => {
         toast.success('Leave Request submitted successfully!');
 
         // Generate WhatsApp 1-click Approval Link
-        const appBaseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        const appBaseUrl = getAppBaseUrl();
         const shareUrl = `${appBaseUrl}/quick-leave?lr=${created.leave_request_no}&id=${created.id}`;
         
         // Auto-Trigger WhatsApp alert via Maytapi Gateway
@@ -951,7 +952,7 @@ const LeaveRequest = () => {
                           <button
                             title="Share on WhatsApp"
                             onClick={() => {
-                              const shareUrl = `${window.location.origin}/quick-leave?lr=${request.leaveRequestId}&id=${request.id}`;
+                              const shareUrl = `${getAppBaseUrl()}/quick-leave?lr=${request.leaveRequestId}&id=${request.id}`;
                               const text = `*Leave Request Approval Needed*\n\n` +
                                 `*LR No:* ${request.leaveRequestId}\n` +
                                 `*Employee:* ${request.requestedBy || request.employeeName}\n` +

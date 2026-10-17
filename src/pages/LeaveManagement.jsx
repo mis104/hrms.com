@@ -9,6 +9,7 @@ import useAuthStore from '../store/authStore';
 import { getUserRole } from '../utils/authRole';
 import { fetchLeaveRequests, createLeaveRequest, updateLeaveStatus, supabase } from '../services/supabaseService';
 import { triggerLeaveApprovalNotification, triggerLeaveRejectionNotification, triggerLeaveRequestNotification } from '../services/whatsappService';
+import { getAppBaseUrl } from '../utils/urlHelper';
 
 const LEAVE_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const LEAVE_PAGE_SIZE = 50;
@@ -506,7 +507,7 @@ const LeaveManagement = () => {
           reason: formData.reason || 'Personal work',
           remark: formData.remark || 'Submitted for approval',
           lrNo: res.data?.leave_request_no || `LR-${Date.now().toString().slice(-5)}`,
-          approvalLink: `${window.location.origin}/leave-management`,
+          approvalLink: `${getAppBaseUrl()}/leave-management`,
         });
 
         setFormData({
@@ -922,7 +923,7 @@ const LeaveManagement = () => {
                               <button
                                 title="Share 1-Click Approval Link on WhatsApp"
                                 onClick={() => {
-                                  const shareUrl = `${window.location.origin}/quick-leave?lr=${item.leaveRequestId || item.serialNo}&id=${item.id}`;
+                                  const shareUrl = `${getAppBaseUrl()}/quick-leave?lr=${item.leaveRequestId || item.serialNo}&id=${item.id}`;
                                   const text = `*Leave Request Approval Needed*\n\n` +
                                     `*LR No:* ${item.leaveRequestId || item.serialNo}\n` +
                                     `*Employee:* ${item.requestedBy || item.employeeName}\n` +

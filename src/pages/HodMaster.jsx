@@ -33,6 +33,7 @@ import {
   FileText,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { getAppBaseUrl } from "../utils/urlHelper";
 import * as XLSX from "xlsx";
 import { supabase } from "../services/supabaseClient";
 
@@ -1726,7 +1727,7 @@ const HodMaster = () => {
                   onClick={() => {
                     const cleanPhone = (testSmsModal.hod_phone || "").replace(/[^0-9]/g, "");
                     const sampleText = encodeURIComponent(
-                      `📢 *Piramal HRMS - Test Approval Alert*\n\nHello ${testSmsModal.hod_name},\nThis is a test notification confirming you are configured as the HOD Approver for ${testSmsModal.department}.\n\nHRMS Portal: ${window.location.origin}`
+                      `📢 *Piramal HRMS - Test Approval Alert*\n\nHello ${testSmsModal.hod_name},\nThis is a test notification confirming you are configured as the HOD Approver for ${testSmsModal.department}.\n\nHRMS Portal: ${getAppBaseUrl()}`
                     );
                     window.open(`https://wa.me/${cleanPhone}?text=${sampleText}`, "_blank");
                     toast.success(`Test alert launched for ${testSmsModal.hod_name}!`);
