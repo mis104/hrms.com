@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { supabase } from '../services/supabaseClient';
+import { getUserRole } from '../utils/authRole';
 
 const LocalTravel = ({ isModal = false, onClose, initialTab = 'in' }) => {
   const navigate = useNavigate();
@@ -37,6 +38,8 @@ const LocalTravel = ({ isModal = false, onClose, initialTab = 'in' }) => {
   const rawUser = localStorage.getItem('user');
   const user = rawUser ? JSON.parse(rawUser) : {};
   const employeeName = user.Name || user.name || user.displayName || user.Username || 'Employee';
+  // Admin sees every employee's travel; everyone else only their own.
+  const isAdmin = getUserRole(user) === 'admin';
 
   const todayStr = new Date().toISOString().split('T')[0];
 
@@ -95,11 +98,18 @@ const LocalTravel = ({ isModal = false, onClose, initialTab = 'in' }) => {
   const fetchPendingTravels = async (silent = false) => {
     if (!silent) setLoadingPending(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('travel_in_out')
         .select('*')
         .order('id', { ascending: false })
         .limit(200);
+
+      // Non-admin users only ever see their OWN travel entries; admin sees all.
+      if (!isAdmin && employeeName) {
+        query = query.ilike('person_name', `%${employeeName}%`);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
 
@@ -424,7 +434,7 @@ const LocalTravel = ({ isModal = false, onClose, initialTab = 'in' }) => {
     const pName = String(item.person_name || '').toLowerCase();
     const eName = employeeName.trim().toLowerCase();
 
-    if (filterMyTrips && eName && !pName.includes(eName) && !eName.includes(pName)) {
+    if (!isAdmin && filterMyTrips && eName && !pName.includes(eName) && !eName.includes(pName)) {
       return false;
     }
 
