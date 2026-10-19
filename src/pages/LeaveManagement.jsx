@@ -1,7 +1,7 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { 
   Search, X, Plus, Share2, RefreshCw, Calendar, CheckCircle2, Clock, 
-  AlertCircle, ChevronLeft, ChevronRight, User, MapPin, Building2, 
+  AlertCircle, ChevronLeft, ChevronRight, User, UserCheck, MapPin, Building2, 
   FileText, Check, Layers, LayoutList, LayoutGrid, ArrowRight, ExternalLink
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -112,6 +112,7 @@ const LeaveManagement = () => {
   const [editableDates, setEditableDates] = useState({ from: '', to: '' });
   const [visibleLimit, setVisibleLimit] = useState(LEAVE_PAGE_SIZE);
   const [viewMode, setViewMode] = useState('table'); // 'table' or 'grid'
+  const [hodList, setHodList] = useState([]);
   const leaveFetchInProgressRef = useRef(false);
 
   // Leave request modal state
@@ -294,6 +295,21 @@ const LeaveManagement = () => {
   useEffect(() => {
     fetchLeaveData();
 
+    const fetchHods = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('hod_master')
+          .select('department, hod_name, status')
+          .eq('status', 'Active');
+        if (data && !error) {
+          setHodList(data);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch HODs:', err);
+      }
+    };
+    fetchHods();
+
     const syncLeaveData = () => fetchLeaveData({ showLoader: false, silent: true });
     const refreshTimer = window.setInterval(syncLeaveData, LEAVE_REFRESH_INTERVAL_MS);
     window.addEventListener('focus', syncLeaveData);
@@ -303,6 +319,30 @@ const LeaveManagement = () => {
       window.removeEventListener('focus', syncLeaveData);
     };
   }, []);
+
+  const hodMap = useMemo(() => {
+    const map = {};
+    hodList.forEach((h) => {
+      if (h.department && h.hod_name) {
+        const key = h.department.trim().toLowerCase();
+        if (!map[key]) {
+          map[key] = h.hod_name;
+        }
+      }
+    });
+    return map;
+  }, [hodList]);
+
+  const getHodName = (item) => {
+    if (!item) return '';
+    const dept = (item.department || '').trim().toLowerCase();
+    if (!dept) return '';
+    if (hodMap[dept]) return hodMap[dept];
+    for (const [k, name] of Object.entries(hodMap)) {
+      if (dept.includes(k) || k.includes(dept)) return name;
+    }
+    return '';
+  };
 
   useEffect(() => {
     if (showModal) {
@@ -335,7 +375,8 @@ const LeaveManagement = () => {
     item.employeeId?.toString().toLowerCase().includes(normalizedSearchTerm) ||
     item.leaveRequestId?.toString().toLowerCase().includes(normalizedSearchTerm) ||
     item.leaveReason?.toString().toLowerCase().includes(normalizedSearchTerm) ||
-    item.department?.toString().toLowerCase().includes(normalizedSearchTerm);
+    item.department?.toString().toLowerCase().includes(normalizedSearchTerm) ||
+    getHodName(item).toLowerCase().includes(normalizedSearchTerm);
 
   const filteredPendingLeaves = useMemo(
     () => scopedPendingLeaves.filter(matchesLeaveSearch),
@@ -734,6 +775,7 @@ const LeaveManagement = () => {
                     <th className="py-3 px-4 w-10 text-center">Select</th>
                   )}
                   <th className="py-3 px-4 whitespace-nowrap min-w-[190px]">Employee / Requester</th>
+                  <th className="py-3 px-4 whitespace-nowrap min-w-[120px]">HOD</th>
                   <th className="py-3 px-4 whitespace-nowrap min-w-[100px]">LR Number</th>
                   <th className="py-3 px-4 whitespace-nowrap min-w-[180px]">Leave Duration</th>
                   <th className="py-3 px-4 min-w-[160px]">Reason & Remarks</th>
@@ -750,7 +792,7 @@ const LeaveManagement = () => {
               <tbody className="divide-y divide-slate-100 bg-white font-normal">
                 {tableLoading ? (
                   <tr>
-                    <td colSpan="9" className="px-6 py-16 text-center text-slate-500">
+                    <td colSpan="10" className="px-6 py-16 text-center text-slate-500">
                       <div className="flex flex-col items-center justify-center gap-3">
                         <div className="w-7 h-7 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
                         <p className="font-semibold text-xs text-slate-600">Loading leave records...</p>
@@ -759,7 +801,7 @@ const LeaveManagement = () => {
                   </tr>
                 ) : currentDisplayList.length === 0 ? (
                   <tr>
-                    <td colSpan="9" className="px-6 py-14 text-center text-slate-400">
+                    <td colSpan="10" className="px-6 py-14 text-center text-slate-400">
                       <div className="flex flex-col items-center justify-center gap-2">
                         <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
                           <AlertCircle size={20} />
@@ -823,6 +865,18 @@ const LeaveManagement = () => {
                               </div>
                             </div>
                           </div>
+                        </td>
+
+                        {/* HOD */}
+                        <td className="py-2.5 px-4 whitespace-nowrap">
+                          {getHodName(item) ? (
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-teal-50 text-teal-800 border border-teal-200/80 font-bold text-xs">
+                              <UserCheck size={11} className="text-teal-600 shrink-0" />
+                              <span>{getHodName(item)}</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 text-xs font-semibold">-</span>
+                          )}
                         </td>
 
                         {/* LR Number */}
@@ -1005,6 +1059,10 @@ const LeaveManagement = () => {
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-slate-500">Duration:</span>
                             <span className="font-bold text-indigo-700">{item.days || item.totalLeaves || "1 day"}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-slate-500">HOD:</span>
+                            <span className="font-bold text-teal-800">{getHodName(item) || "-"}</span>
                           </div>
                           <div className="text-xs pt-1">
                             <span className="text-slate-500 block mb-0.5">Reason:</span>

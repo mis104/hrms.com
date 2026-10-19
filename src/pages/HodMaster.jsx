@@ -50,22 +50,12 @@ export const APPROVAL_MODULES = [
 export const DEFAULT_DEPARTMENTS = [
   "Sales Head",
   "MDO",
-  "Directors",
+  "HR",
+  "Sales",
+  "Digital Marketing",
   "Accounts",
   "Plants",
-  "Sales",
-  "Production",
-  "Maintenance",
-  "Quality Control",
-  "Accounts & Finance",
-  "Human Resources",
-  "Purchase & Procurement",
-  "IT & Systems",
-  "Logistics & Dispatch",
-  "Marketing",
-  "Administration",
-  "Operations",
-  "General / All",
+  "Directors",
 ];
 
 const LOCAL_STORAGE_KEY = "piramal_hod_master_cache_v1";
@@ -153,7 +143,7 @@ const HodMaster = () => {
 
   // Form State
   const [form, setForm] = useState({
-    department: "Sales",
+    department: "",
     customDepartment: "",
     hod_name: "",
     hod_phone: "",
@@ -179,11 +169,6 @@ const HodMaster = () => {
 
         if (usersData && usersData.length > 0) {
           setSystemUsers(usersData);
-          const deptFromUsers = usersData
-            .map((u) => u.department)
-            .filter(Boolean)
-            .map((d) => d.trim());
-          setDepartmentsList((prev) => Array.from(new Set([...prev, ...deptFromUsers])));
         }
       } catch (err) {
         console.warn("User lookup note:", err);
@@ -255,7 +240,7 @@ const HodMaster = () => {
     } else {
       setEditingHod(null);
       setForm({
-        department: "Sales",
+        department: "",
         customDepartment: "",
         hod_name: "",
         hod_phone: "",
@@ -1276,8 +1261,10 @@ const HodMaster = () => {
                     value={form.department}
                     onChange={(e) => setForm((prev) => ({ ...prev, department: e.target.value }))}
                     className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+                    required
                   >
-                    {departmentsList.map((d) => (
+                    <option value="">Select department</option>
+                    {DEFAULT_DEPARTMENTS.map((d) => (
                       <option key={d} value={d}>
                         {d}
                       </option>
