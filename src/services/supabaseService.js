@@ -155,18 +155,21 @@ export const fetchLeaveRequests = async ({
   requestedBy = null,
   status = null,
   search = null,
+  year = null,
+  month = null, // JS month index as string ('0'..'11') or 'all'/null
+  select = '*',
   orderBy = 'id',
   ascending = true,
 } = {}) => {
   try {
     let query = supabase
       .from('leave_requests')
-      .select('*', { count: 'exact' });
+      .select(select, { count: 'exact' });
 
-
-
+    // Exact match keeps egress low and prevents one employee's name from
+    // partially matching another's (e.g. "Deepak" matching several people).
     if (requestedBy && requestedBy !== 'all') {
-      query = query.ilike('requested_by', `%${requestedBy}%`);
+      query = query.eq('requested_by', requestedBy);
     }
 
     if (status && status !== 'all') {
@@ -178,6 +181,25 @@ export const fetchLeaveRequests = async ({
       query = query.or(
         `requested_by.ilike.%${s}%,leave_request_no.ilike.%${s}%,department.ilike.%${s}%,leave_reason.ilike.%${s}%`
       );
+    }
+
+    // Server-side Year / Month filter on the string date columns.
+    // Dates are stored mostly as DD-MM-YYYY, with a few as YYYY-MM-DD, so we
+    // match both layouts against leave_from_date and leave_to_date.
+    if (year) {
+      const y = String(year);
+      let dateOr;
+      if (month === null || month === undefined || month === 'all' || month === '') {
+        dateOr =
+          `leave_from_date.ilike.%-${y},leave_from_date.ilike.${y}-%,` +
+          `leave_to_date.ilike.%-${y},leave_to_date.ilike.${y}-%`;
+      } else {
+        const mm = String(parseInt(month, 10) + 1).padStart(2, '0');
+        dateOr =
+          `leave_from_date.ilike.%-${mm}-${y},leave_from_date.ilike.${y}-${mm}-%,` +
+          `leave_to_date.ilike.%-${mm}-${y},leave_to_date.ilike.${y}-${mm}-%`;
+      }
+      query = query.or(dateOr);
     }
 
     const from = (page - 1) * limit;

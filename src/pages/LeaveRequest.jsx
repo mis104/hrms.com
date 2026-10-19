@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronRight, Download, Share2, Trash2 } from 'lucide-react';
+import { Plus, X, Calendar, Clock, CheckCircle, AlertCircle, Filter, Sparkles, ChevronLeft, ChevronRight, Download, Share2, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 import { fetchLeaveRequests, createLeaveRequest, supabase } from '../services/supabaseService';
@@ -8,6 +8,16 @@ import { triggerLeaveRequestNotification } from '../services/whatsappService';
 import { getAppBaseUrl } from '../utils/urlHelper';
 
 const LEAVE_PAGE_SIZE = 50;
+
+// Only the columns the list actually renders — keeps egress low (no image blobs,
+// approval_planned/delay, updated_at, etc.).
+const LEAVE_LIST_COLUMNS =
+  'id, leave_request_no, requested_by, department, total_leaves, job_location, ' +
+  'leave_from_date, leave_to_date, leave_reason, remark, image_url, approved_by, ' +
+  'approval_actual, approval_status, approval_remarks, timestamp, created_at';
+
+// Minimal columns needed to compute the summary cards across ALL matching rows.
+const LEAVE_STATS_COLUMNS = 'total_leaves, approval_status, leave_from_date, leave_to_date';
 
 const WhatsAppIcon = ({ size = 16, className = "" }) => (
   <svg
@@ -36,7 +46,10 @@ const LeaveRequest = () => {
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
   const [requestedByFilter, setRequestedByFilter] = useState(isAdmin ? 'all' : (user.Name || ''));
-  const [visibleLimit, setVisibleLimit] = useState(LEAVE_PAGE_SIZE);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [requestedByOptions, setRequestedByOptions] = useState(isAdmin ? [] : (user.Name ? [user.Name] : []));
+  const [statsSummary, setStatsSummary] = useState({ total: 0, approved: 0, pending: 0, rejected: 0 });
   const [employeeDetailsLoading, setEmployeeDetailsLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [departmentDropdownOpen, setDepartmentDropdownOpen] = useState(false);
@@ -146,14 +159,17 @@ const LeaveRequest = () => {
 
   const handleMonthChange = (e) => {
     setSelectedMonth(e.target.value);
+    setCurrentPage(1);
   };
 
   const handleYearChange = (e) => {
     setSelectedYear(e.target.value);
+    setCurrentPage(1);
   };
 
   const handleRequestedByChange = (e) => {
     setRequestedByFilter(e.target.value);
+    setCurrentPage(1);
   };
 
   const formatDateToDDMMYYYY = (dateValue) => {
@@ -346,19 +362,26 @@ const LeaveRequest = () => {
       );
   };
 
-  const fetchLeaveData = async () => {
-    if (leaveFetchInProgressRef.current) {
-      return;
-    }
+  // Filters applied on the server for every query (list + stats). Keeping them in
+  // one place guarantees the paginated list and the summary cards always agree.
+  const serverFilters = () => ({
+    requestedBy: isAdmin ? (requestedByFilter === 'all' ? null : requestedByFilter) : (user.Name || null),
+    year: selectedYear || null,
+    month: selectedMonth,
+  });
 
-    leaveFetchInProgressRef.current = true;
+  const fetchLeaveData = async () => {
     setTableLoading(true);
     setError(null);
 
     try {
       const res = await fetchLeaveRequests({
-        limit: 500,
-        requestedBy: isAdmin ? (requestedByFilter === 'all' ? null : requestedByFilter) : (user.Name || null),
+        page: currentPage,
+        limit: LEAVE_PAGE_SIZE,
+        select: LEAVE_LIST_COLUMNS,
+        orderBy: 'id',
+        ascending: false,
+        ...serverFilters(),
       });
 
       if (!res.success) {
@@ -384,9 +407,7 @@ const LeaveRequest = () => {
           leaveReason: row.leave_reason || '',
           remark: row.remark || '',
           imageUrl: row.image_url || '',
-          approvalPlanned: row.approval_planned || '',
           approvalActual: row.approval_actual || '',
-          approvalDelay: row.approval_delay || '',
           approvedBy: row.approved_by || '',
           approvalStatus: row.approval_status || 'Pending',
           approvalRemarks: row.approval_remarks || '',
@@ -404,20 +425,89 @@ const LeaveRequest = () => {
       });
 
       setLeavesData(processedData);
+      setTotalRecords(res.totalCount || 0);
 
     } catch (error) {
       console.error('Error fetching leave data:', error);
       setError(error.message);
       toast.error(`Failed to load leave data: ${error.message}`);
     } finally {
-      leaveFetchInProgressRef.current = false;
       setTableLoading(false);
     }
   };
 
+  // Summary cards must reflect ALL matching records (not just the current page),
+  // so this pulls only the few tiny columns needed and sums them client-side.
+  const fetchLeaveStats = async () => {
+    try {
+      const res = await fetchLeaveRequests({
+        page: 1,
+        limit: 5000,
+        select: LEAVE_STATS_COLUMNS,
+        ...serverFilters(),
+      });
+
+      if (!res.success) return;
+
+      const summary = (res.data || []).reduce((acc, row) => {
+        const dayCount = Number(row.total_leaves) || calculateDays(row.leave_from_date, row.leave_to_date) || 0;
+        const status = (row.approval_status || 'pending').toString().trim().toLowerCase();
+        acc.total += dayCount;
+        if (status === 'approved') acc.approved += dayCount;
+        else if (status === 'rejected') acc.rejected += dayCount;
+        else acc.pending += dayCount;
+        return acc;
+      }, { total: 0, approved: 0, pending: 0, rejected: 0 });
+
+      setStatsSummary(summary);
+    } catch (error) {
+      console.error('Error fetching leave stats:', error);
+    }
+  };
+
+  // Populate the "Requested By" dropdown from the whole table (one column only),
+  // independent of pagination, so every employee stays selectable.
+  const fetchRequestedByNames = async () => {
+    if (!isAdmin) {
+      setRequestedByOptions(user.Name ? [user.Name] : []);
+      return;
+    }
+    try {
+      const { data } = await supabase
+        .from('leave_requests')
+        .select('requested_by')
+        .not('requested_by', 'is', null)
+        .neq('requested_by', '')
+        .limit(2000);
+
+      const names = Array.from(new Set(
+        (data || []).map((r) => (r.requested_by || '').trim()).filter(Boolean)
+      )).sort();
+      setRequestedByOptions(names);
+    } catch (error) {
+      console.error('Error fetching requested_by names:', error);
+    }
+  };
+
   useEffect(() => {
-    fetchLeaveData();
-  }, [requestedByFilter]);
+    fetchRequestedByNames();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced list fetch: re-runs on page change and on any server-side filter.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchLeaveData();
+    }, 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, requestedByFilter, selectedMonth, selectedYear]);
+
+  // Stats recompute on filter changes only (independent of which page is shown).
+  useEffect(() => {
+    fetchLeaveStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedByFilter, selectedMonth, selectedYear]);
 
   useEffect(() => {
     if (showModal) {
@@ -528,7 +618,10 @@ const LeaveRequest = () => {
           imageUrl: ''
         });
         setShowModal(false);
+        setCurrentPage(1);
         fetchLeaveData();
+        fetchLeaveStats();
+        fetchRequestedByNames();
       } else {
         toast.error('Failed to submit: ' + (res.error || 'Unknown error'));
       }
@@ -563,7 +656,11 @@ const LeaveRequest = () => {
       if (delError) throw delError;
 
       toast.success(`${lrTitle} deleted successfully!`, { id: toastId });
+      // Remove locally for instant feedback, then resync page + summary totals.
       setLeavesData((prev) => prev.filter((item) => item.id !== request.id && item.leaveRequestId !== request.leaveRequestId));
+      setTotalRecords((prev) => Math.max(0, prev - 1));
+      fetchLeaveData();
+      fetchLeaveStats();
     } catch (err) {
       console.error('Delete leave error:', err);
       toast.error('Failed to delete: ' + err.message);
@@ -703,28 +800,8 @@ const LeaveRequest = () => {
 
   const yearOptions = getYearOptions();
 
-  const requestedByOptions = useMemo(() => {
-    if (!isAdmin) {
-      return user.Name ? [user.Name] : [];
-    }
-
-    return [...new Set(
-      leavesData
-        .map((leave) => leave.requestedBy || leave.employeeName)
-        .filter(Boolean)
-    )].sort();
-  }, [isAdmin, leavesData, user.Name]);
-
-  const matchesRequestedByFilter = (leave) =>
-    requestedByFilter === 'all' || (leave.requestedBy || leave.employeeName) === requestedByFilter;
-
-  const visibleLeaves = useMemo(() => (
-    isAdmin
-      ? leavesData
-      : leavesData.filter((leave) =>
-        leave.employeeName?.toString().trim().toLowerCase() === user.Name?.toString().trim().toLowerCase()
-      )
-  ), [isAdmin, leavesData, user.Name]);
+  // requestedByOptions, the "Requested By" filter and the month/year filter are
+  // all applied on the server now (see fetchLeaveData / fetchRequestedByNames).
 
   const parseLeaveDaysValue = (value) => {
     if (value === null || value === undefined) return 0;
@@ -770,74 +847,10 @@ const LeaveRequest = () => {
     { value: '11', label: 'December' }
   ];
 
-  const getLRNumber = (item) => {
-    if (!item) return 0;
-    const lrStr = (item.leaveRequestId || item.serialNo || '').toString();
-    const match = lrStr.match(/\d+/);
-    if (match) return parseInt(match[0], 10);
-    return typeof item.id === 'number' ? item.id : 0;
-  };
-
-  const filteredLeaveRequests = useMemo(() => {
-    const list = visibleLeaves.filter(leave => {
-      const requestedByMatch = matchesRequestedByFilter(leave);
-      const matchesYear = selectedMonth === 'all'
-        ? (
-          isDateInSelectedYear(leave.startDate, selectedYear) ||
-          isDateInSelectedYear(leave.endDate, selectedYear) ||
-          (!leave.startDate && !leave.endDate)
-        )
-        : (
-          isDateInSelectedPeriod(leave.startDate, selectedMonth, selectedYear) ||
-          isDateInSelectedPeriod(leave.endDate, selectedMonth, selectedYear)
-        );
-
-      return requestedByMatch && matchesYear;
-    });
-
-    return list.sort((a, b) => {
-      const lrA = getLRNumber(a);
-      const lrB = getLRNumber(b);
-      if (lrB !== lrA) return lrB - lrA;
-      return (b.id || 0) - (a.id || 0);
-    });
-  }, [visibleLeaves, selectedMonth, selectedYear, requestedByFilter]);
-
-  useEffect(() => {
-    setVisibleLimit(LEAVE_PAGE_SIZE);
-  }, [selectedMonth, selectedYear, requestedByFilter]);
-
-  const displayedLeaveRequests = useMemo(
-    () => filteredLeaveRequests.slice(0, visibleLimit),
-    [filteredLeaveRequests, visibleLimit]
-  );
-
-  const leaveDaySummary = useMemo(() => filteredLeaveRequests.reduce(
-    (summary, leave) => {
-      const dayCount = getLeaveDayCount(leave);
-      const status = leave.status?.toString().toLowerCase();
-
-      summary.total += dayCount;
-
-      if (status === 'approved') {
-        summary.approved += dayCount;
-      } else if (status === 'pending') {
-        summary.pending += dayCount;
-      } else if (status === 'rejected') {
-        summary.rejected += dayCount;
-      }
-
-      return summary;
-    },
-    { total: 0, approved: 0, pending: 0, rejected: 0 }
-  ), [filteredLeaveRequests]);
-
-  const leaveSummaryCards = useMemo(() => ([
-    { label: 'Paid Leave', value: leaveDaySummary.total, subtext: 'Total leave days', icon: Calendar, iconClass: 'text-navy', bgClass: 'bg-indigo-100' },
-    { label: 'Approved Leave', value: leaveDaySummary.approved, subtext: 'Approved leave days', icon: CheckCircle, iconClass: 'text-green-600', bgClass: 'bg-green-100' },
-    { label: 'Pending Leave', value: leaveDaySummary.pending, subtext: 'Pending leave days', icon: Clock, iconClass: 'text-yellow-600', bgClass: 'bg-yellow-100' },
-    { label: 'Rejected Leave', value: leaveDaySummary.rejected, subtext: 'Rejected leave days', icon: AlertCircle, iconClass: 'text-red-600', bgClass: 'bg-red-100' },
-  ]), [leaveDaySummary]);
+  // The server already returns exactly the current page, filtered and ordered
+  // (newest first). The summary cards come from statsSummary (all matching rows).
+  const displayedLeaveRequests = leavesData;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / LEAVE_PAGE_SIZE));
 
   const getStatusMeta = (status) => {
     const value = status?.toString().trim().toLowerCase();
@@ -878,34 +891,59 @@ const LeaveRequest = () => {
   const selectedLeaveStatusMeta = selectedLeaveRequest ? getStatusMeta(selectedLeaveRequest.status) : null;
   const SelectedLeaveStatusIcon = selectedLeaveStatusMeta?.icon;
 
-  const handleDownloadExcel = () => {
-    if (!filteredLeaveRequests || filteredLeaveRequests.length === 0) {
-      toast.error("No data available to download");
-      return;
+  const handleDownloadExcel = async () => {
+    // Export every record matching the current filters (not just the visible
+    // page) — fetched on demand so normal browsing stays low-egress.
+    const toastId = toast.loading('Preparing Excel...');
+    try {
+      const res = await fetchLeaveRequests({
+        page: 1,
+        limit: 5000,
+        select: LEAVE_LIST_COLUMNS,
+        orderBy: 'id',
+        ascending: false,
+        ...serverFilters(),
+      });
+
+      const rows = res.success ? (res.data || []) : [];
+      if (rows.length === 0) {
+        toast.error('No data available to download', { id: toastId });
+        return;
+      }
+
+      const exportData = rows.map((row, index) => {
+        let displayDays = row.total_leaves ? `${row.total_leaves} ${row.total_leaves === 1 ? 'day' : 'days'}` : '';
+        if (!displayDays && row.leave_from_date && row.leave_to_date) {
+          displayDays = formatLeaveDays(row.leave_from_date, row.leave_to_date);
+        }
+        return {
+          "S.No": index + 1,
+          "Leave Request ID": row.leave_request_no || row.id,
+          "Requested By": row.requested_by,
+          "Department": row.department,
+          "Job Location": row.job_location,
+          "Total Leaves (Days)": displayDays,
+          "Leave From Date": formatDOB(row.leave_from_date),
+          "Leave To Date": formatDOB(row.leave_to_date),
+          "Leave Reason": row.leave_reason,
+          "Remark": row.remark,
+          "Applied Date": formatDOB(row.timestamp || row.created_at),
+          "Approval Status": row.approval_status,
+          "Approved By": row.approved_by,
+          "Approval Remarks": row.approval_remarks,
+        };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Leave Requests");
+
+      XLSX.writeFile(workbook, `Leave_Requests_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success(`Exported ${rows.length} records`, { id: toastId });
+    } catch (error) {
+      console.error('Excel export error:', error);
+      toast.error('Failed to export Excel', { id: toastId });
     }
-
-    const exportData = filteredLeaveRequests.map((leave, index) => ({
-      "S.No": index + 1,
-      "Leave Request ID": leave.leaveRequestId || leave.id,
-      "Requested By": leave.requestedBy || leave.employeeName,
-      "Department": leave.department,
-      "Job Location": leave.jobLocation,
-      "Total Leaves (Days)": leave.days,
-      "Leave From Date": formatDOB(leave.startDate),
-      "Leave To Date": formatDOB(leave.endDate),
-      "Leave Reason": leave.reason,
-      "Remark": leave.remark,
-      "Applied Date": formatDOB(leave.appliedDate),
-      "Approval Status": leave.status,
-      "Approved By": leave.approvedBy,
-      "Approval Remarks": leave.approvalRemarks,
-    }));
-
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Leave Requests");
-    
-    XLSX.writeFile(workbook, `Leave_Requests_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   // Lock body scroll when modal is open
@@ -953,25 +991,25 @@ const LeaveRequest = () => {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <p className="text-[10px] font-black uppercase text-slate-400">Total Leave Days</p>
-            <h3 className="mt-1 text-2xl font-black text-slate-900">{formatLeaveCount(leaveDaySummary.total)}</h3>
+            <h3 className="mt-1 text-2xl font-black text-slate-900">{formatLeaveCount(statsSummary.total)}</h3>
             <p className="text-[10px] font-semibold text-slate-500">All applied leaves</p>
           </div>
 
           <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/50 p-4 shadow-sm">
             <p className="text-[10px] font-black uppercase text-emerald-600">Approved Days</p>
-            <h3 className="mt-1 text-2xl font-black text-emerald-800">{formatLeaveCount(leaveDaySummary.approved)}</h3>
+            <h3 className="mt-1 text-2xl font-black text-emerald-800">{formatLeaveCount(statsSummary.approved)}</h3>
             <p className="text-[10px] font-semibold text-emerald-600">Approved by manager</p>
           </div>
 
           <div className="rounded-2xl border border-amber-200/80 bg-amber-50/50 p-4 shadow-sm">
             <p className="text-[10px] font-black uppercase text-amber-600">Pending Days</p>
-            <h3 className="mt-1 text-2xl font-black text-amber-800">{formatLeaveCount(leaveDaySummary.pending)}</h3>
+            <h3 className="mt-1 text-2xl font-black text-amber-800">{formatLeaveCount(statsSummary.pending)}</h3>
             <p className="text-[10px] font-semibold text-amber-600">Awaiting approval</p>
           </div>
 
           <div className="rounded-2xl border border-rose-200/80 bg-rose-50/50 p-4 shadow-sm">
             <p className="text-[10px] font-black uppercase text-rose-600">Rejected Days</p>
-            <h3 className="mt-1 text-2xl font-black text-rose-800">{formatLeaveCount(leaveDaySummary.rejected)}</h3>
+            <h3 className="mt-1 text-2xl font-black text-rose-800">{formatLeaveCount(statsSummary.rejected)}</h3>
             <p className="text-[10px] font-semibold text-rose-600">Not approved</p>
           </div>
         </div>
@@ -1030,7 +1068,8 @@ const LeaveRequest = () => {
           <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
             <h2 className="text-base font-black text-slate-900">Leave Requests History</h2>
             <span className="text-xs text-slate-500 font-bold">
-              Showing {Math.min(visibleLimit, filteredLeaveRequests.length)} of {filteredLeaveRequests.length} records
+              Showing {totalRecords > 0 ? (currentPage - 1) * LEAVE_PAGE_SIZE + 1 : 0}
+              {' '}to {Math.min(currentPage * LEAVE_PAGE_SIZE, totalRecords)} of {totalRecords} records
             </span>
           </div>
 
@@ -1039,7 +1078,7 @@ const LeaveRequest = () => {
               <div className="flex justify-center py-10">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-900"></div>
               </div>
-            ) : filteredLeaveRequests.length > 0 ? (
+            ) : displayedLeaveRequests.length > 0 ? (
               <div className="space-y-3">
                 {displayedLeaveRequests.map((request) => {
                   const statusMeta = getStatusMeta(request.status);
@@ -1132,17 +1171,6 @@ const LeaveRequest = () => {
                   );
                 })}
 
-                {visibleLimit < filteredLeaveRequests.length && (
-                  <div className="pt-3 text-center">
-                    <button
-                      type="button"
-                      onClick={() => setVisibleLimit((limit) => limit + LEAVE_PAGE_SIZE)}
-                      className="inline-flex items-center justify-center rounded-xl border border-slate-300 px-5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                    >
-                      Load More ({filteredLeaveRequests.length - visibleLimit} remaining)
-                    </button>
-                  </div>
-                )}
               </div>
             ) : (
               <div className="py-12 text-center text-slate-400">
@@ -1150,6 +1178,40 @@ const LeaveRequest = () => {
               </div>
             )}
           </div>
+
+          {/* Pagination toolbar */}
+          {totalRecords > 0 && (
+            <div className="px-4 py-2.5 bg-slate-50/80 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <p className="text-[11px] text-slate-500 font-medium">
+                Page <span className="text-slate-900 font-bold">{currentPage}</span> of{' '}
+                <span className="text-slate-900 font-bold">{totalPages}</span>
+              </p>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                  disabled={currentPage === 1 || tableLoading}
+                  className="px-3 py-1 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 disabled:pointer-events-none transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
+                >
+                  <ChevronLeft size={13} />
+                  <span>Prev</span>
+                </button>
+                <span className="text-xs font-bold px-2.5 text-slate-800 font-mono">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage >= totalPages || tableLoading}
+                  className="px-3 py-1 text-xs font-bold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 disabled:pointer-events-none transition-colors flex items-center gap-1 shadow-sm cursor-pointer"
+                >
+                  <span>Next</span>
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
