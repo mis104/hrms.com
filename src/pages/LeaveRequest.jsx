@@ -43,6 +43,8 @@ const LeaveRequest = () => {
   const leaveFetchInProgressRef = useRef(false);
   const employeeDetailsLoadedRef = useRef(false);
   const employeeFetchInProgressRef = useRef(false);
+  const [sendingWhatsAppLrs, setSendingWhatsAppLrs] = useState(new Set());
+  const sentWhatsAppLrsRef = useRef(new Set());
   const [formData, setFormData] = useState({
     employeeId: employeeId,
     employeeName: user.Name || '',
@@ -568,25 +570,69 @@ const LeaveRequest = () => {
     }
   };
 
+  const checkWhatsAppAlreadySent = async (lrNo) => {
+    if (!lrNo) return false;
+    try {
+      if (sentWhatsAppLrsRef.current.has(lrNo)) {
+        return true;
+      }
+
+      const localLogs = JSON.parse(localStorage.getItem('hrms_whatsapp_logs') || '[]');
+      const inLocal = localLogs.some((l) => 
+        l.message_body && l.message_body.includes(lrNo)
+      );
+      if (inLocal) {
+        sentWhatsAppLrsRef.current.add(lrNo);
+        return true;
+      }
+
+      const { data, error } = await supabase
+        .from('whatsapp_logs')
+        .select('id')
+        .ilike('message_body', `%${lrNo}%`)
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        sentWhatsAppLrsRef.current.add(lrNo);
+        return true;
+      }
+    } catch (e) {
+      console.warn('Check whatsapp sent log note:', e);
+    }
+    return false;
+  };
+
   const handleSendWhatsApp = async (request) => {
     const lrNo = request.leaveRequestId || request.serialNo || 'LR';
-    const empName = request.requestedBy || request.employeeName || 'Employee';
-    const datesStr = `${formatDOB(request.startDate)} to ${formatDOB(request.endDate)}`;
-    const daysStr = request.days || '-';
-    const reasonStr = request.reason || '-';
-    const deptStr = request.department || '-';
-    const shareUrl = `${getAppBaseUrl()}/quick-leave?lr=${lrNo}&id=${request.id || ''}`;
 
-    const text = `*Leave Request Approval Needed*\n\n` +
-      `*LR No:* ${lrNo}\n` +
-      `*Employee:* ${empName}\n` +
-      `*Department:* ${deptStr}\n` +
-      `*Dates:* ${datesStr} (${daysStr})\n` +
-      `*Reason:* ${reasonStr}\n\n` +
-      `👉 *1-Click Approval Link:*\n${shareUrl}`;
+    // Prevent simultaneous double-clicks
+    if (sendingWhatsAppLrs.has(lrNo)) {
+      return;
+    }
+
+    // Double send protection: check if already sent to HOD
+    const alreadySent = await checkWhatsAppAlreadySent(lrNo);
+    if (alreadySent) {
+      const confirmResend = window.confirm(
+        `WhatsApp alert has already been sent to HOD for ${lrNo}.\n\nDo you want to re-send to HOD?`
+      );
+      if (!confirmResend) {
+        return;
+      }
+    }
+
+    setSendingWhatsAppLrs((prev) => new Set(prev).add(lrNo));
+    const toastId = toast.loading(`Auto-triggering WhatsApp alert for ${lrNo}...`);
 
     try {
-      triggerLeaveRequestNotification({
+      const empName = request.requestedBy || request.employeeName || 'Employee';
+      const datesStr = `${formatDOB(request.startDate)} to ${formatDOB(request.endDate)}`;
+      const daysStr = request.days || '-';
+      const reasonStr = request.reason || '-';
+      const deptStr = request.department || '-';
+      const shareUrl = `${getAppBaseUrl()}/quick-leave?lr=${lrNo}&id=${request.id || ''}`;
+
+      const results = await triggerLeaveRequestNotification({
         employeeName: empName,
         employeeId: request.employeeId || 'EMP',
         designation: request.designation || deptStr,
@@ -600,13 +646,26 @@ const LeaveRequest = () => {
         remark: request.remark || 'Submitted for approval',
         lrNo: lrNo,
         approvalLink: shareUrl,
-      }).catch((e) => console.warn('Automated WhatsApp dispatch warning:', e));
-    } catch (e) {
-      console.warn('WhatsApp service trigger error:', e);
-    }
+      });
 
-    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
-    toast.success('WhatsApp SMS link opened!');
+      sentWhatsAppLrsRef.current.add(lrNo);
+
+      if (results && results.length > 0) {
+        const recipients = results.map((r) => r.recipient).join(', ');
+        toast.success(`WhatsApp alert auto-triggered to HOD (${recipients})!`, { id: toastId });
+      } else {
+        toast.success(`WhatsApp alert auto-triggered for ${lrNo}!`, { id: toastId });
+      }
+    } catch (error) {
+      console.error('Auto-trigger WhatsApp error:', error);
+      toast.error('Failed to trigger WhatsApp: ' + (error.message || 'Unknown error'), { id: toastId });
+    } finally {
+      setSendingWhatsAppLrs((prev) => {
+        const next = new Set(prev);
+        next.delete(lrNo);
+        return next;
+      });
+    }
   };
 
   const hasSubmittedToday = useMemo(() => {
@@ -1021,9 +1080,14 @@ const LeaveRequest = () => {
 
                           <button
                             type="button"
-                            title="Send WhatsApp SMS"
+                            title="Auto-trigger WhatsApp Alert to HOD"
+                            disabled={sendingWhatsAppLrs.has(request.leaveRequestId || request.serialNo)}
                             onClick={() => handleSendWhatsApp(request)}
-                            className="p-2 text-emerald-600 hover:text-white hover:bg-emerald-600 rounded-xl border border-emerald-300 hover:border-emerald-600 transition shadow-sm flex items-center justify-center cursor-pointer"
+                            className={`p-2 rounded-xl border transition shadow-sm flex items-center justify-center cursor-pointer ${
+                              sendingWhatsAppLrs.has(request.leaveRequestId || request.serialNo)
+                                ? "opacity-50 cursor-not-allowed bg-slate-100 border-slate-300 text-slate-400"
+                                : "text-emerald-600 hover:text-white hover:bg-emerald-600 border-emerald-300 hover:border-emerald-600"
+                            }`}
                           >
                             <WhatsAppIcon size={16} />
                           </button>
