@@ -1358,6 +1358,20 @@ const CandidateSortlisted = () => {
     );
   };
 
+  const isCandidatePending = (c) => {
+    if (!c) return false;
+    if (activeTab === "pending") return true;
+    const p1 = (c.stage1_planned || "").trim();
+    const a1 = (c.stage1_actual || "").trim();
+    const st = (c.stage1_status || "").trim().toLowerCase();
+    return (
+      (p1 !== "" && a1 === "") ||
+      (!a1 && (st === "pending" || !st || st === "good canidate" || st === "good candidate")) ||
+      !c.stage1_status ||
+      st === "pending"
+    );
+  };
+
   return (
     <div className="min-h-screen bg-slate-50/50 p-3 sm:p-6 space-y-5 animate-fadeIn">
       {/* ==========================================
@@ -1884,7 +1898,7 @@ const CandidateSortlisted = () => {
               <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
                 {paginatedCandidates.map((c, index) => {
                   const globalIndex = (currentPage - 1) * itemsPerPage + index + 1;
-                  const isPending = !c.stage1_status || c.stage1_status === "Pending";
+                  const isPending = isCandidatePending(c);
 
                   return (
                     <tr
@@ -2155,7 +2169,7 @@ const CandidateSortlisted = () => {
                 </div>
 
                 <div className="flex items-center gap-1.5">
-                  {(!c.stage1_status || c.stage1_status === "Pending") && (
+                  {isCandidatePending(c) && (
                     <button
                       onClick={() => handleOpenActionModal(c)}
                       className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm cursor-pointer"
