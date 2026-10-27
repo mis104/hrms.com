@@ -295,7 +295,7 @@ const haversineDistanceMeters = (from, to) => {
 const getBrowserPosition = () =>
   new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(new Error("Browser location support nahi kar raha hai"));
+      reject(new Error("Browser does not support geolocation"));
       return;
     }
 
@@ -948,7 +948,7 @@ const MarkAttendance = () => {
 
         if (diffMins < 10) {
           const remainingMins = Math.ceil(10 - diffMins);
-          toast.error(`Check-out check-in ke 10 minutes baad hi kar sakte hain. ${remainingMins} min bache hain.`);
+          toast.error(`Check-out is only allowed 10 minutes after check-in. ${remainingMins} min remaining.`);
           return;
         }
       }
@@ -970,12 +970,12 @@ const MarkAttendance = () => {
           const code = locationError?.code;
           const message =
             code === 1
-              ? "Location permission band hai. Mobile settings me GPS/Location allow karein, phir dobara try karein."
+              ? "Location permission is denied. Please allow location access in your device settings and try again."
               : code === 2
-                ? "GPS off hai. Location on karke dobara try karein."
+                ? "GPS is turned off. Please enable location/GPS and try again."
                 : code === 3
-                  ? "GPS signal nahi mil raha. Khuli jagah jaakar dobara try karein."
-                  : "Location fetch nahi ho payi. GPS on karke dobara try karein.";
+                  ? "Unable to get GPS signal. Please move to an open area and try again."
+                  : "Unable to retrieve location. Please turn on GPS and try again.";
           toast.error(message);
           return;
         }
@@ -1015,7 +1015,7 @@ const MarkAttendance = () => {
       ];
 
       if (!navigator.onLine) {
-        toast.error("Internet connection check karein. Network offline hai.");
+        toast.error("Please check your internet connection. Network is offline.");
         return;
       }
 
@@ -1037,13 +1037,30 @@ const MarkAttendance = () => {
       };
 
       // Direct punch save to Supabase attendance table
-      const { error: sbErr } = await supabase
+      let { error: sbErr } = await supabase
         .from("attendance")
         .insert([supaPayload]);
 
+      // If network glitch / Failed to fetch occurs, retry once after 1.2s
+      if (sbErr && (String(sbErr.message).includes("Failed to fetch") || String(sbErr.message).includes("NetworkError"))) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        const retryResult = await supabase
+          .from("attendance")
+          .insert([supaPayload]);
+        sbErr = retryResult.error;
+      }
+
       if (sbErr) {
         console.error("Supabase attendance insert error:", sbErr);
-        toast.error("Attendance mark nahi ho payi: " + sbErr.message);
+        const isNetworkErr =
+          String(sbErr.message).toLowerCase().includes("failed to fetch") ||
+          String(sbErr.message).toLowerCase().includes("network") ||
+          !navigator.onLine;
+        toast.error(
+          isNetworkErr
+            ? "Network error or weak connection. Please check your internet and try again."
+            : "Failed to mark attendance: " + (sbErr.message || "Unknown error")
+        );
         return;
       }
 
@@ -1073,7 +1090,13 @@ const MarkAttendance = () => {
     } catch (err) {
       console.error("Mark attendance error:", err);
       const isTrustedTimeError = err.name === "AbortError" || String(err.message || "").includes("Trusted time");
-      toast.error(isTrustedTimeError ? "Please set the correct time." : err.message || "Attendance mark failed");
+      const isFetchErr = String(err.message || "").toLowerCase().includes("failed to fetch");
+      const errorMsg = isTrustedTimeError
+        ? "Please set the correct time."
+        : isFetchErr
+          ? "Network error or weak connection. Please check your internet and try again."
+          : err.message || "Attendance mark failed";
+      toast.error(errorMsg);
       if (!isTrustedTimeError) {
         setLocationCheck({ status: "error", message: err.message || "Location error" });
       }
