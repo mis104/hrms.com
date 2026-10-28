@@ -31,7 +31,8 @@ import {
   Car,
   Route,
   CreditCard,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Pencil
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import useAuthStore from '../store/authStore';
@@ -796,6 +797,7 @@ const EmployeeMobileHome = () => {
     { icon: User, label: 'My Profile', path: '/employee-profile', iconClass: 'bg-amber-50 text-amber-700 ring-amber-100' },
     { icon: Package, label: 'Company Assets', path: '/company-assets', iconClass: 'bg-teal-50 text-teal-700 ring-teal-100' },
     { icon: Briefcase, label: 'Alteration Form', externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSewFXJwJjtXErhqO_PoCLqIi-eH7i3Qau94LcnARJsgiwf2Lw/viewform?usp=publish-editor', path: '/employee-mobile', iconClass: 'bg-orange-50 text-orange-700 ring-orange-100' },
+    { icon: Pencil, label: 'STATIONARY FORM', externalUrl: 'https://docs.google.com/forms/d/e/1FAIpQLSecpWtYJXBrgVGU7QsWXF0BLXnhMVVg6paJOIJZey3hXNTp0w/viewform?usp=publish-editor', path: '/employee-mobile', iconClass: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-100' },
     { id: 'contacts', icon: Users, label: 'All Contacts', path: '/employee-mobile', iconClass: 'bg-cyan-50 text-cyan-700 ring-cyan-100' },
   ];
 
