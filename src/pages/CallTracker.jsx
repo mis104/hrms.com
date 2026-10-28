@@ -6,6 +6,7 @@ import {
   LayoutList, LayoutGrid, MessageSquare, Briefcase, Tag, Compass, Phone, FileText, Download, ExternalLink
 } from "lucide-react";
 import { toast } from "react-hot-toast";
+import * as XLSX from "xlsx";
 import { supabase } from "../services/supabaseClient";
 
 const CallTracker = () => {
@@ -25,6 +26,7 @@ const CallTracker = () => {
   const [editingId, setEditingId] = useState(null);
   const [viewMode, setViewMode] = useState("table"); // 'table' or 'grid'
   const [statusStats, setStatusStats] = useState({ all: 0, scheduled: 0, done: 0, pending: 0, reschedule: 0, hold: 0 });
+  const [isExporting, setIsExporting] = useState(false);
 
   const recordsPerPage = 50;
 
@@ -315,6 +317,104 @@ const CallTracker = () => {
     }
   };
 
+  // Export ALL records matching the current filters (not just the visible page) to Excel.
+  const exportToExcel = async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    const exportToast = toast.loading("Preparing Excel...");
+    try {
+      const BATCH = 1000;
+      let allRows = [];
+      let start = 0;
+      let hasMore = true;
+
+      // Supabase caps a single request, so page through in batches until done.
+      while (hasMore) {
+        let query = supabase
+          .from('calling_tracking')
+          .select('task_id, entry_by, applicant_name, contact_no, role, portal_used, location, stage, notes, feedback, status, interview_status, interview_date, attachment_url, created_at, timestamp');
+
+        // Mirror the same filters used by the on-screen list in loadData().
+        if (interviewStatusFilter !== "all") query = query.eq('interview_status', interviewStatusFilter);
+        if (interviewDateFilter) query = query.eq('interview_date', interviewDateFilter);
+        if (entryByFilter && entryByFilter !== 'all') query = query.eq('entry_by', entryByFilter);
+        if (searchTerm && searchTerm.trim()) {
+          const term = searchTerm.trim();
+          query = query.or(`applicant_name.ilike.%${term}%,task_id.ilike.%${term}%,contact_no.ilike.%${term}%,role.ilike.%${term}%,location.ilike.%${term}%`);
+        }
+
+        const now = new Date();
+        if (dateFilter === 'today') {
+          const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+          query = query.gte('created_at', startOfDay);
+        } else if (dateFilter === 'yesterday') {
+          const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString();
+          const endOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+          query = query.gte('created_at', startOfYesterday).lt('created_at', endOfYesterday);
+        } else if (dateFilter === 'monthly') {
+          const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).toISOString();
+          query = query.gte('created_at', oneMonthAgo);
+        } else if (dateFilter === 'custom' && fromDate && toDate) {
+          const s = new Date(fromDate); s.setHours(0, 0, 0, 0);
+          const e = new Date(toDate); e.setHours(23, 59, 59, 999);
+          query = query.gte('created_at', s.toISOString()).lte('created_at', e.toISOString());
+        }
+
+        query = query.order('created_at', { ascending: false }).range(start, start + BATCH - 1);
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        const batchRows = data || [];
+        allRows = allRows.concat(batchRows);
+        if (batchRows.length < BATCH) hasMore = false;
+        else start += BATCH;
+      }
+
+      if (allRows.length === 0) {
+        toast.dismiss(exportToast);
+        toast.error("No records to export.");
+        return;
+      }
+
+      const exportData = allRows.map((row, index) => ({
+        "Sr No": index + 1,
+        "Timestamp": row.timestamp || (row.created_at ? formatDateDisplay(row.created_at) : ''),
+        "Task ID": row.task_id || "",
+        "Candidate Name": row.applicant_name || "",
+        "Contact No": row.contact_no || "",
+        "Role": row.role || "",
+        "Location": row.location || "",
+        "Sourcing Channel": row.portal_used || "",
+        "Stage": row.stage || "",
+        "Interview Status": row.interview_status || "",
+        "Interview Date": row.interview_date || "",
+        "Status": row.status || "",
+        "Notes": row.notes || "",
+        "Feedback": row.feedback || "",
+        "Entry By": row.entry_by || "",
+        "Attachment": row.attachment_url || "",
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Call Tracker");
+
+      const d = new Date();
+      const dateStr = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+      XLSX.writeFile(workbook, `Call_Tracker_${dateStr}.xlsx`);
+
+      toast.dismiss(exportToast);
+      toast.success(`Exported ${exportData.length} records to Excel!`);
+    } catch (err) {
+      console.error("Export error:", err);
+      toast.dismiss(exportToast);
+      toast.error(err.message || "Failed to export Excel file");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // Debounced Search and Fetch
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -599,6 +699,17 @@ const CallTracker = () => {
             >
               <RefreshCw size={12} className={tableLoading ? "animate-spin text-teal-600" : "text-slate-500"} />
               <span>{tableLoading ? "Syncing..." : "Sync"}</span>
+            </button>
+
+            {/* Export to Excel */}
+            <button
+              onClick={exportToExcel}
+              disabled={isExporting || tableLoading}
+              title="Download all filtered records as Excel"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200/90 rounded-xl text-xs font-semibold transition-all shadow-2xs active:scale-95 disabled:opacity-60 cursor-pointer"
+            >
+              <Download size={12} className={isExporting ? "animate-pulse text-emerald-600" : "text-emerald-600"} />
+              <span>{isExporting ? "Exporting..." : "Excel"}</span>
             </button>
 
             {/* Add Task Button */}

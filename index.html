@@ -21,6 +21,55 @@
 <body>
   <div id="root"></div>
   <script type="module" src="/src/main.jsx"></script>
+  <script>
+    // Blank-screen watchdog.
+    // On some devices the WebView occasionally fails to paint the React root
+    // (startup interrupted, or the JS context was dropped when the app resumed
+    // from background). React never mounts, so NO React error boundary can catch
+    // it and the user is left on a stuck blank white screen. If the root is still
+    // empty after load — or after the app comes back to the foreground — reload
+    // to recover. A per-session counter + minimum gap guarantee no reload loop.
+    (function () {
+      var COUNT_KEY = '__hrms_blank_reload_count__';
+      var LAST_KEY = '__hrms_blank_last_reload__';
+      var MAX_RELOADS = 3;        // give up after a few tries (no infinite loop)
+      var MIN_GAP_MS = 8000;      // never reload twice within 8s (loop guard)
+
+      function rootIsEmpty() {
+        var root = document.getElementById('root');
+        return !root || root.childElementCount === 0;
+      }
+      function getNum(key) {
+        try { return parseInt(sessionStorage.getItem(key) || '0', 10) || 0; } catch (e) { return 0; }
+      }
+      function setNum(key, val) {
+        try { sessionStorage.setItem(key, String(val)); } catch (e) {}
+      }
+      function recoverIfBlank() {
+        if (!rootIsEmpty()) {
+          // App mounted fine — reset so a future blank gets a fresh set of retries.
+          setNum(COUNT_KEY, 0);
+          return;
+        }
+        if (Date.now() - getNum(LAST_KEY) < MIN_GAP_MS) return; // too soon — avoid loop
+        if (getNum(COUNT_KEY) >= MAX_RELOADS) return;           // stop after a few tries
+        setNum(COUNT_KEY, getNum(COUNT_KEY) + 1);
+        setNum(LAST_KEY, Date.now());
+        window.location.reload();
+      }
+
+      // Blank at first launch / cold start.
+      window.addEventListener('load', function () {
+        setTimeout(recoverIfBlank, 4000);
+      });
+      // Blank after resuming the app from the background.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+          setTimeout(recoverIfBlank, 1500);
+        }
+      });
+    })();
+  </script>
 </body>
 
 </html>

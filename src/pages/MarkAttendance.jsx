@@ -935,10 +935,14 @@ const MarkAttendance = () => {
         })
         .sort((a, b) => a.dateObj - b.dateObj);
 
-      if (trustedTodayEntries.length >= 2) return;
-
       const lastTrustedEntry = trustedTodayEntries[trustedTodayEntries.length - 1];
       const statusToMark = lastTrustedEntry?.status === "IN" ? "OUT" : "IN";
+
+      // A pending check-out (last punch was IN) must always be allowed, even if
+      // duplicate IN punches pushed today's count to 2+. Only cap a fresh IN once
+      // the day already has a completed punch pair — otherwise a stray duplicate
+      // IN would silently block check-out forever.
+      if (statusToMark === "IN" && trustedTodayEntries.length >= 2) return;
 
       if (statusToMark === "OUT" && lastTrustedEntry) {
         const lastPunchTime = lastTrustedEntry.dateObj.getTime();
@@ -987,15 +991,11 @@ const MarkAttendance = () => {
       }
 
       const mapLink = `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
-      const address = locationCheck?.address || await reverseGeocode(latitude, longitude);
-      if (address) {
-        writeCache(MARK_ATTENDANCE_LOCATION_CACHE_KEY, { latitude, longitude, address });
-        setLocationCheck((current) =>
-          current?.latitude === latitude && current?.longitude === longitude
-            ? { ...current, address }
-            : current
-        );
-      }
+      // Never block the punch on a reverse-geocode network call. Use the address
+      // already warmed by the background location effect (the map link always
+      // carries the exact coordinates). If it is not ready yet we still save the
+      // punch instantly and backfill the exact address after the insert below.
+      const address = locationCheck?.address || "";
       const timestamp = formatDateTimeForSheet(now);
       const rowData = [
         timestamp,
@@ -1044,10 +1044,32 @@ const MarkAttendance = () => {
       // If network glitch / Failed to fetch occurs, retry once after 1.2s
       if (sbErr && (String(sbErr.message).includes("Failed to fetch") || String(sbErr.message).includes("NetworkError"))) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
-        const retryResult = await supabase
-          .from("attendance")
-          .insert([supaPayload]);
-        sbErr = retryResult.error;
+
+        // The failure may have been only on the RESPONSE while the row actually
+        // landed on the server. Verify first so the retry never creates a
+        // duplicate punch (person_name + status + timestampe is unique per punch).
+        let alreadySaved = false;
+        try {
+          const { data: existingRows } = await supabase
+            .from("attendance")
+            .select("id")
+            .eq("person_name", punchPersonName)
+            .eq("status", statusToMark)
+            .eq("timestampe", timestamp)
+            .limit(1);
+          alreadySaved = Array.isArray(existingRows) && existingRows.length > 0;
+        } catch {
+          // Verification itself failed (still offline) — fall through to retry.
+        }
+
+        if (alreadySaved) {
+          sbErr = null;
+        } else {
+          const retryResult = await supabase
+            .from("attendance")
+            .insert([supaPayload]);
+          sbErr = retryResult.error;
+        }
       }
 
       if (sbErr) {
@@ -1062,6 +1084,30 @@ const MarkAttendance = () => {
             : "Failed to mark attendance: " + (sbErr.message || "Unknown error")
         );
         return;
+      }
+
+      // Punch is already saved. If the exact address was not warm at punch time,
+      // reverse-geocode in the background and backfill it onto this exact row
+      // (person_name + status + timestampe uniquely identify this punch). This
+      // keeps check-in/out instant while still storing the real punch address.
+      if (!address) {
+        reverseGeocode(latitude, longitude)
+          .then((resolved) => {
+            if (!resolved) return;
+            writeCache(MARK_ATTENDANCE_LOCATION_CACHE_KEY, { latitude, longitude, address: resolved });
+            setLocationCheck((current) =>
+              current?.latitude === latitude && current?.longitude === longitude
+                ? { ...current, address: resolved }
+                : current
+            );
+            return supabase
+              .from("attendance")
+              .update({ address: resolved })
+              .eq("person_name", punchPersonName)
+              .eq("status", statusToMark)
+              .eq("timestampe", timestamp);
+          })
+          .catch(() => {});
       }
 
       const newEntry = {
