@@ -325,9 +325,9 @@ const Indent = () => {
 
   // Helper to populate dropdowns from records
   const updateDropdownsFromRecords = (records) => {
-    const depts = Array.from(
-      new Set(records.map((r) => (r.department || "").trim()).filter(Boolean))
-    ).sort();
+    // Department dropdown is sourced only from the master_dropdowns table (see the
+    // effect below), so indent records no longer feed it — this prevents duplicates
+    // (e.g. "Production" twice) and keeps it to exactly what HR maintains there.
     const pList = Array.from(
       new Set(records.map((r) => (r.post || "").trim()).filter(Boolean))
     ).sort();
@@ -350,7 +350,6 @@ const Indent = () => {
       )
     ).sort();
 
-    setDepartments(depts);
     setPostsList(pList);
     setLocationsList(locList);
     if (indList.length > 0) setIndenterNames(indList);
@@ -462,7 +461,6 @@ const Indent = () => {
           const parsed = JSON.parse(cached);
           if (parsed && Array.isArray(parsed.indenter) && parsed.indenter.length > 0) {
             setIndenterNames((prev) => Array.from(new Set([...prev, ...parsed.indenter])).sort());
-            setDepartments((prev) => Array.from(new Set([...prev, ...parsed.dept])).sort());
             setTimings((prev) => Array.from(new Set([...prev, ...parsed.timing])).sort());
             return;
           }
@@ -493,9 +491,6 @@ const Indent = () => {
         if (mdIndenter.length > 0) {
           setIndenterNames((prev) => Array.from(new Set([...prev, ...mdIndenter])).sort());
         }
-        if (mdDept.length > 0) {
-          setDepartments((prev) => Array.from(new Set([...prev, ...mdDept])).sort());
-        }
         if (mdTiming.length > 0) {
           setTimings((prev) => Array.from(new Set([...prev, ...mdTiming])).sort());
         }
@@ -507,6 +502,33 @@ const Indent = () => {
 
   useEffect(() => {
     fetchData();
+  }, []);
+
+  // Department dropdown: fetch fresh & DISTINCT from the master_dropdowns table only.
+  // Independent of the indent-data/dropdown caches so new values (e.g. "Purchase")
+  // show up and no value is duplicated (case-insensitive de-dupe).
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("master_dropdowns")
+          .select("department")
+          .not("department", "is", null);
+        const seen = new Set();
+        const depts = [];
+        (data || []).forEach((row) => {
+          const val = (row.department || "").trim();
+          const key = val.toLowerCase();
+          if (val && !seen.has(key)) {
+            seen.add(key);
+            depts.push(val);
+          }
+        });
+        if (depts.length > 0) setDepartments(depts.sort());
+      } catch (_) {
+        // Keep whatever departments are already loaded if this fetch fails.
+      }
+    })();
   }, []);
 
   // Stats calculation
