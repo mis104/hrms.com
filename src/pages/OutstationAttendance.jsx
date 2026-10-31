@@ -366,7 +366,7 @@ const OutstationAttendance = () => {
         return `${d}/${m}/${parsed.getFullYear()}`;
       }
     }
-    if (/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(raw)) return raw;
+    if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(raw)) return raw;
     const isoMatch = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
     if (isoMatch) return `${isoMatch[3].padStart(2, '0')}/${isoMatch[2].padStart(2, '0')}/${isoMatch[1]}`;
     return raw;
@@ -385,7 +385,9 @@ const OutstationAttendance = () => {
     }
     const isoMatch = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
     if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
-    const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    // Accept both "/" and "-" separators so dash dates (DD-MM-YYYY) are parsed
+    // instead of returning null (which would drop the record -> shown as Absent).
+    const slashMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
     if (slashMatch) {
       const y = slashMatch[3].length === 2 ? Number(`20${slashMatch[3]}`) : Number(slashMatch[3]);
       return new Date(y, Number(slashMatch[2]) - 1, Number(slashMatch[1]));
@@ -483,7 +485,7 @@ const OutstationAttendance = () => {
         return `${String(parsed.getHours()).padStart(2, '0')}:${String(parsed.getMinutes()).padStart(2, '0')}`;
       }
     }
-    if (raw.includes('/') && raw.includes(':')) {
+    if ((raw.includes('/') || raw.includes('-')) && raw.includes(':')) {
       const parts = raw.split(' ');
       if (parts.length >= 2) return parts[1].substring(0, 5);
     }
