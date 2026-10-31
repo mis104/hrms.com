@@ -398,6 +398,47 @@ const Indent = () => {
         );
       }
 
+      // Auto-close Indents: when a candidate's joining (joining_fms) has Stage 5
+      // Actual filled (stage5_actual not blank), close the matching OPEN indent.
+      // Indents that are already Closed/Hold are never touched.
+      try {
+        const openIndentNos = records
+          .filter((r) => (r.position_status || "").trim().toUpperCase() === "OPEN" && r.indent_no)
+          .map((r) => String(r.indent_no).trim());
+
+        if (openIndentNos.length > 0) {
+          const { data: joinedRows } = await supabase
+            .from("joining_fms")
+            .select("indent_no, stage5_actual")
+            .not("stage5_actual", "is", null)
+            .neq("stage5_actual", "");
+
+          const completedIndentNos = new Set(
+            (joinedRows || [])
+              .filter((j) => (j.stage5_actual || "").toString().trim() !== "" && j.indent_no)
+              .map((j) => String(j.indent_no).trim())
+          );
+
+          const indentNosToClose = openIndentNos.filter((no) => completedIndentNos.has(no));
+
+          if (indentNosToClose.length > 0) {
+            await supabase
+              .from("fms")
+              .update({ position_status: "Closed", updated_at: new Date().toISOString() })
+              .in("indent_no", indentNosToClose);
+
+            const closeSet = new Set(indentNosToClose);
+            records = records.map((r) =>
+              closeSet.has(String(r.indent_no).trim())
+                ? { ...r, position_status: "Closed" }
+                : r
+            );
+          }
+        }
+      } catch (autoCloseErr) {
+        console.warn("Auto-close indent reconcile skipped:", autoCloseErr);
+      }
+
       setIndentData(records);
       updateLocalIndentCache(records);
       updateDropdownsFromRecords(records);
