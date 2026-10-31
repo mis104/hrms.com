@@ -300,8 +300,12 @@ const OnlinePosting = () => {
         const agencyPlanned = rawAgencyPlanned || addOneDayToTimestamp(row.timestamp);
         const agencyActual = po2?.timestamp || (row.stage2_actual || "").toString().trim();
 
-        const onlinePending = planned !== "" && actual === "";
-        const agencyPending = agencyPlanned !== "" && agencyActual === "";
+        // Pending is decided purely by the FMS Planned/Actual columns:
+        // Planned is NOT blank AND Actual IS blank — same rule for Stage 1 & Stage 2.
+        // (Do not use the data_response po1/po2 fallback here, otherwise a stray
+        // PO record hides a row whose fms Actual column is still blank.)
+        const onlinePending = rawPlanned !== "" && (row.stage1_actual || "").toString().trim() === "";
+        const agencyPending = rawAgencyPlanned !== "" && (row.stage2_actual || "").toString().trim() === "";
         const onlineDone = planned !== "" && actual !== "";
         const agencyDone = agencyPlanned !== "" && agencyActual !== "";
 

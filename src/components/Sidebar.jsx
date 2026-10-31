@@ -59,7 +59,7 @@ const SidebarContent = ({
   // NavLink uses context so it's fine.
 
   const badgeMap = {
-    "/online_posting": (pendingCounts?.onlinePostingCount || 0) + (pendingCounts?.jobConsultancyCount || 0),
+    "/online_posting": pendingCounts?.onlinePostingTasksCount || 0,
     "/candidate_sortlisted": pendingCounts?.candidateShortlistedCount || 0,
     "/candidate-shortlisted": pendingCounts?.candidateShortlistedCount || 0,
     "/verification_before_interview": pendingCounts?.verificationCount || 0,

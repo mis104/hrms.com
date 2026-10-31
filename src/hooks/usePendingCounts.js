@@ -23,6 +23,7 @@ export const usePendingCounts = () => {
     openIndentsCount: 0,
     onlinePostingCount: 0,
     jobConsultancyCount: 0,
+    onlinePostingTasksCount: 0,
     candidateShortlistedCount: 0,
     verificationCount: 0,
     interviewSelectionCount: 0,
@@ -55,21 +56,31 @@ export const usePendingCounts = () => {
         let openIndents = 0;
         let onlinePosting = 0;
         let jobConsultancy = 0;
+        let onlinePostingTasks = 0; // unique indents with stage1 OR stage2 pending
 
         (fmsData || []).forEach((r) => {
           if ((r.position_status || '').toUpperCase() === 'OPEN') {
             openIndents++;
           }
+          const notClosed = (r.position_status || '').toUpperCase() !== 'CLOSED';
           const p1 = (r.stage1_planned || '').trim();
           const a1 = (r.stage1_actual || '').trim();
-          if (p1 !== '' && a1 === '' && (r.position_status || '').toUpperCase() !== 'CLOSED') {
+          const stage1Pending = p1 !== '' && a1 === '' && notClosed;
+          if (stage1Pending) {
             onlinePosting++;
           }
 
           const p2 = (r.stage2_planned || '').trim();
           const a2 = (r.stage2_actual || '').trim();
-          if (p2 !== '' && a2 === '' && (r.position_status || '').toUpperCase() !== 'CLOSED') {
+          const stage2Pending = p2 !== '' && a2 === '' && notClosed;
+          if (stage2Pending) {
             jobConsultancy++;
+          }
+
+          // Count the indent once as a single pending task even when both stages
+          // are pending, so the sidebar badge matches the one-row-per-indent list.
+          if (stage1Pending || stage2Pending) {
+            onlinePostingTasks++;
           }
         });
 
@@ -139,6 +150,7 @@ export const usePendingCounts = () => {
           openIndentsCount: openIndents,
           onlinePostingCount: onlinePosting,
           jobConsultancyCount: jobConsultancy,
+          onlinePostingTasksCount: onlinePostingTasks,
           candidateShortlistedCount: candidateShortlisted,
           verificationCount: verification,
           interviewSelectionCount: interviewSelection,
