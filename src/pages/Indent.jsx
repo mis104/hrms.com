@@ -1693,9 +1693,11 @@ const Indent = () => {
                           required
                         />
                         <datalist id={`indenter-list-${index}`}>
-                          {indenterNames.map((n) => (
-                            <option key={n} value={n} />
-                          ))}
+                          {indenterNames
+                            .filter((n) => (n || "").trim().toLowerCase() !== "apurva ray")
+                            .map((n) => (
+                              <option key={n} value={n} />
+                            ))}
                         </datalist>
                       </div>
 

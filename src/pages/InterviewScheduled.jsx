@@ -34,13 +34,18 @@ const InterviewScheduled = () => {
   }, []);
 
   const fetchUsers = async () => {
+    // Names that must never appear in the Entry By dropdown.
+    const isExcludedEntryBy = (name) => {
+      const n = (name || "").trim().toLowerCase();
+      return n === "apurva" || n === "apurva ray";
+    };
     try {
       const cached = sessionStorage.getItem('hrms_entry_by_cache');
       if (cached) {
         try {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setUsers(parsed);
+            setUsers(parsed.filter((u) => !isExcludedEntryBy(u)));
             return;
           }
         } catch (_) {}
@@ -62,7 +67,10 @@ const InterviewScheduled = () => {
       const ctList = (ctData || []).map((r) => (r.entry_by || "").trim()).filter(Boolean);
       const mdList = (mdData || []).map((r) => (r.entry_by || "").trim()).filter(Boolean);
 
-      const uniqueEntryBy = Array.from(new Set([...ctList, ...mdList])).filter(Boolean).sort((a, b) => a.localeCompare(b));
+      const uniqueEntryBy = Array.from(new Set([...ctList, ...mdList]))
+        .filter(Boolean)
+        .filter((u) => !isExcludedEntryBy(u))
+        .sort((a, b) => a.localeCompare(b));
       setUsers(uniqueEntryBy);
       if (uniqueEntryBy.length > 0) {
         sessionStorage.setItem('hrms_entry_by_cache', JSON.stringify(uniqueEntryBy));
