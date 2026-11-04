@@ -1,0 +1,103 @@
+# ---------------------------------------------------------------------------
+# Codemagic CI/CD — builds the Piramal HRMS iOS app (.ipa) in the cloud.
+# Lets you produce iOS builds from Windows WITHOUT owning a Mac.
+# ---------------------------------------------------------------------------
+#
+# ONE-TIME SETUP (do this once in the Codemagic web UI — https://codemagic.io):
+#
+#   1. Sign up at codemagic.io and connect THIS git repository.
+#
+#   2. You need an Apple Developer account ($99/year). In Codemagic:
+#        Team settings -> Integrations -> App Store Connect
+#        -> upload an "App Store Connect API key" (.p8 + Key ID + Issuer ID).
+#      Give that integration a NAME and put the SAME name below at
+#      `integrations.app_store_connect` (replace CODEMAGIC_ASC_KEY).
+#
+#   3. In your Apple Developer account, register the bundle id:
+#        com.piramal.hrms
+#
+#   4. Create a SECURE environment variable group named `hrms_env` and add
+#      every VITE_ value from your LOCAL .env file (the same values the Android
+#      build uses). Mark each as "Secure":
+#        VITE_SUPABASE_URL
+#        VITE_SUPABASE_ANON_KEY
+#        VITE_GOOGLE_SHEET_URL
+#        VITE_SUBMIT_URL
+#        VITE_JOINING_SHEET_URL
+#        VITE_LEAVING_SHEET_URL
+#        VITE_OUTSTATION_SHEET_URL
+#        VITE_CLOUDINARY_CLOUD_NAME
+#        VITE_CLOUDINARY_UPLOAD_PRESET
+#
+#   5. Push this file to the repo, then press "Start new build" in Codemagic.
+#      Download the .ipa from the build Artifacts (also emailed to you).
+#
+#   Distribution note: `app_store` build = upload to TestFlight / App Store.
+#   To install directly on specific test phones instead, change
+#   `distribution_type` to `ad_hoc` and register those devices' UDIDs in Apple.
+# ---------------------------------------------------------------------------
+
+workflows:
+  ios-ipa:
+    name: Piramal HRMS - iOS IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    integrations:
+      app_store_connect: CODEMAGIC_ASC_KEY   # <-- replace with YOUR App Store Connect API key name (step 2)
+
+    environment:
+      groups:
+        - hrms_env                           # <-- the VITE_* secure variables (step 4)
+      ios_signing:
+        distribution_type: app_store         # app_store | ad_hoc | development | enterprise
+        bundle_identifier: com.piramal.hrms
+      vars:
+        XCODE_PROJECT: "ios/App/App.xcodeproj"
+        XCODE_SCHEME: "App"
+      node: 20
+      xcode: latest
+
+    scripts:
+      - name: Install npm dependencies
+        script: npm ci
+
+      - name: Recreate .env for the Vite build (from secure vars)
+        script: |
+          rm -f .env
+          echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
+          echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
+          echo "VITE_GOOGLE_SHEET_URL=$VITE_GOOGLE_SHEET_URL" >> .env
+          echo "VITE_SUBMIT_URL=$VITE_SUBMIT_URL" >> .env
+          echo "VITE_JOINING_SHEET_URL=$VITE_JOINING_SHEET_URL" >> .env
+          echo "VITE_LEAVING_SHEET_URL=$VITE_LEAVING_SHEET_URL" >> .env
+          echo "VITE_OUTSTATION_SHEET_URL=$VITE_OUTSTATION_SHEET_URL" >> .env
+          echo "VITE_CLOUDINARY_CLOUD_NAME=$VITE_CLOUDINARY_CLOUD_NAME" >> .env
+          echo "VITE_CLOUDINARY_UPLOAD_PRESET=$VITE_CLOUDINARY_UPLOAD_PRESET" >> .env
+
+      - name: Build web assets (Vite -> dist)
+        script: npm run build
+
+      - name: Capacitor sync iOS (copies dist + resolves Swift packages)
+        script: npx cap sync ios
+
+      - name: Apply code signing profiles
+        script: xcode-project use-profiles
+
+      - name: Build iOS IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      email:
+        recipients:
+          - info@piramalpetroleum.com
+        notify:
+          success: true
+          failure: true
