@@ -17,17 +17,11 @@
 #        com.piramal.hrms
 #
 #   4. Create a SECURE environment variable group named `hrms_env` and add
-#      every VITE_ value from your LOCAL .env file (the same values the Android
-#      build uses). Mark each as "Secure":
-#        VITE_SUPABASE_URL
-#        VITE_SUPABASE_ANON_KEY
-#        VITE_GOOGLE_SHEET_URL
-#        VITE_SUBMIT_URL
-#        VITE_JOINING_SHEET_URL
-#        VITE_LEAVING_SHEET_URL
-#        VITE_OUTSTATION_SHEET_URL
-#        VITE_CLOUDINARY_CLOUD_NAME
-#        VITE_CLOUDINARY_UPLOAD_PRESET
+#      EVERY line from your LOCAL .env file (same values the Android build uses).
+#      Add each as: Name + Value, Group = hrms_env, "Secure" checked.
+#      The build writes all VITE_* group vars into .env automatically, so just
+#      mirror your .env exactly (e.g. VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY,
+#      VITE_GOOGLE_SHEET_URL, VITE_APP_URL, the *_SHEET_URL ones, Cloudinary, ...).
 #
 #   5. Push this file to the repo, then press "Start new build" in Codemagic.
 #      Download the .ipa from the build Artifacts (also emailed to you).
@@ -62,18 +56,13 @@ workflows:
       - name: Install npm dependencies
         script: npm ci
 
-      - name: Recreate .env for the Vite build (from secure vars)
+      - name: Recreate .env for the Vite build (from the hrms_env group)
         script: |
-          rm -f .env
-          echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL" >> .env
-          echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY" >> .env
-          echo "VITE_GOOGLE_SHEET_URL=$VITE_GOOGLE_SHEET_URL" >> .env
-          echo "VITE_SUBMIT_URL=$VITE_SUBMIT_URL" >> .env
-          echo "VITE_JOINING_SHEET_URL=$VITE_JOINING_SHEET_URL" >> .env
-          echo "VITE_LEAVING_SHEET_URL=$VITE_LEAVING_SHEET_URL" >> .env
-          echo "VITE_OUTSTATION_SHEET_URL=$VITE_OUTSTATION_SHEET_URL" >> .env
-          echo "VITE_CLOUDINARY_CLOUD_NAME=$VITE_CLOUDINARY_CLOUD_NAME" >> .env
-          echo "VITE_CLOUDINARY_UPLOAD_PRESET=$VITE_CLOUDINARY_UPLOAD_PRESET" >> .env
+          # Write every VITE_* variable from the hrms_env group into .env, so the
+          # iOS build uses the exact same config as the local / Android build.
+          # (No hard-coded list — whatever you add to the group is picked up.)
+          env | grep '^VITE_' > .env
+          echo "Wrote $(wc -l < .env) VITE_ variables to .env"
 
       - name: Build web assets (Vite -> dist)
         script: npm run build
