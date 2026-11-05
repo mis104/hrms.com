@@ -35,6 +35,8 @@ const Employee = () => {
     joiningPlace: "",
     designation: "",
     salary: "",
+    salaryRevisedDates: "",
+    salaryRevisedDateNew: "",
     currentAddress: "",
     addressAsPerAadhar: "",
     dobAsPerAadhar: "",
@@ -502,6 +504,7 @@ const Employee = () => {
       joiningPlace: item.joiningPlace || getVal(["Joining Place"], 13),
       designation: item.designation || getVal(["Designation"], 14),
       salary: item.salary || getVal(["Salary", "Finalized Salary"], 15),
+      salaryRevisedDates: (item.originalRow && item.originalRow.salary_revised_dates) || "",
       currentAddress: item.currentAddress || getVal(["Current Address"], 19),
       addressAsPerAadhar: item.addressAsPerAadhar || getVal(["Address as per Aadhar", "Address As per Aadhar Card"], 20),
       dobAsPerAadhar: item.dobAsPerAadhar || getVal(["DOB as per Aadhar", "Date of Birth As Per Aadhar Card", "Date of Birth"], 21),
@@ -582,6 +585,8 @@ const Employee = () => {
       joiningPlace: item.joiningPlace || row.joining_place || "",
       designation: item.designation || row.designation || row.lookup_designation || "",
       salary: item.salary || row.finalized_salary || row.salary || "",
+      salaryRevisedDates: row.salary_revised_dates || "",
+      salaryRevisedDateNew: "",
       currentAddress: item.currentAddress || row.current_address || "",
       addressAsPerAadhar: item.addressAsPerAadhar || row.address_as_per_aadhar_card || "",
       dobAsPerAadhar: convertToInputDate(item.dobAsPerAadhar || row.dob_as_per_aadhar || ""),
@@ -662,6 +667,7 @@ const Employee = () => {
           joining_place: editFormData.joiningPlace,
           designation: editFormData.designation,
           salary: editFormData.salary,
+          salary_revised_dates: editFormData.salaryRevisedDates,
           current_address: editFormData.currentAddress,
           address_as_per_aadhar_card: editFormData.addressAsPerAadhar,
           dob_as_per_aadhar: editFormData.dobAsPerAadhar,
@@ -2136,6 +2142,18 @@ const Employee = () => {
                         Finalized
                       </span>
                     </div>
+                    {(selectedProfile.salaryRevisedDates || "").split(",").map(s => s.trim()).filter(Boolean).length > 0 && (
+                      <div className="col-span-2">
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-1">Salary Revised Date</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(selectedProfile.salaryRevisedDates || "").split(",").map(s => s.trim()).filter(Boolean).map((d, i) => (
+                            <span key={i} className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-1 rounded-lg font-bold">
+                              {formatDOB(d)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2633,6 +2651,49 @@ const Employee = () => {
                       onChange={(e) => setEditFormData({ ...editFormData, salary: e.target.value })}
                       className="w-full border border-gray-300 rounded-xl px-3 py-2 bg-white text-gray-800 text-sm font-semibold focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
                     />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Salary Revised Date</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="date"
+                        value={editFormData.salaryRevisedDateNew}
+                        onChange={(e) => setEditFormData({ ...editFormData, salaryRevisedDateNew: e.target.value })}
+                        className="flex-1 border border-gray-300 rounded-xl px-3 py-2 bg-white text-gray-800 text-sm font-semibold focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const d = (editFormData.salaryRevisedDateNew || "").trim();
+                          if (!d) return;
+                          const list = (editFormData.salaryRevisedDates || "").split(",").map(s => s.trim()).filter(Boolean);
+                          if (list.includes(d)) return;
+                          setEditFormData({ ...editFormData, salaryRevisedDates: [...list, d].join(", "), salaryRevisedDateNew: "" });
+                        }}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold transition-all active:scale-95"
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {(editFormData.salaryRevisedDates || "").split(",").map(s => s.trim()).filter(Boolean).length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {(editFormData.salaryRevisedDates || "").split(",").map(s => s.trim()).filter(Boolean).map((d, i) => (
+                          <span key={i} className="inline-flex items-center gap-1.5 text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 px-2.5 py-1 rounded-lg font-bold">
+                            {formatDOB(d)}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const list = (editFormData.salaryRevisedDates || "").split(",").map(x => x.trim()).filter(Boolean).filter(x => x !== d);
+                                setEditFormData({ ...editFormData, salaryRevisedDates: list.join(", ") });
+                              }}
+                              className="text-indigo-400 hover:text-red-500 font-black leading-none"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Past PF ID</label>
