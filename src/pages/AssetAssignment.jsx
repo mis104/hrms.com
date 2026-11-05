@@ -191,7 +191,7 @@ const AssetAssignment = () => {
                     employeeCode: row.employee_code || "—",
                     candidateName: row.candidate_name || "",
                     finalizedSalary: row.finalized_salary || "",
-                    indentNumber: row.indent_no || (row.id && row.id.includes("_") ? row.id.split("_")[0] : ""),
+                    indentNumber: row.indent_no || (String(row.id).includes("_") ? String(row.id).split("_")[0] : ""),
                     designation: row.designation || row.lookup_designation || "",
                     department: row.joining_place || row.designation || "",
                     contactNo: row.mobile_no || "",
@@ -342,7 +342,7 @@ const AssetAssignment = () => {
             const matchesSearch = (
                 (item.candidateName || "").toLowerCase().includes(term) ||
                 (item.employeeCode || "").toLowerCase().includes(term) ||
-                (item.customId || "").toLowerCase().includes(term) ||
+                String(item.customId ?? "").toLowerCase().includes(term) ||
                 (item.indentNumber || "").toLowerCase().includes(term) ||
                 (item.designation || "").toLowerCase().includes(term) ||
                 (item.laptopDetails || "").toLowerCase().includes(term) ||
@@ -674,6 +674,9 @@ const AssetAssignment = () => {
                                             <div>
                                                 <span className="font-bold text-slate-800">{candidate.customId || "—"}</span>
                                                 <div className="text-[11px] text-slate-400 font-medium">{candidate.designation}</div>
+                                                {candidate.indentNumber && (
+                                                    <div className="text-[10px] text-teal-600 font-semibold mt-0.5">Indent: {candidate.indentNumber}</div>
+                                                )}
                                             </div>
                                         </td>
 
