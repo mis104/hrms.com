@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS public.joining_fms (
     photo_of_front_bank_passbook TEXT,
     personal_email_id TEXT,
     esic_no TEXT,
+    esic_pf_attachment TEXT,
     highest_qualification TEXT,
     aadhar_card_no TEXT,
     qualification_photo TEXT,

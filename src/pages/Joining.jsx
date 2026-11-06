@@ -214,6 +214,7 @@ const Joining = () => {
         bankPassbookPhoto: "",
         personalEmail: "",
         esicNo: "",
+        esicPfAttachment: "",
         highestQualification: "",
         aadharCardNo: "",
         qualificationPhoto: "",
@@ -286,6 +287,7 @@ const Joining = () => {
             bankPassbookPhoto: candidate.photo_of_front_bank_passbook || "",
             personalEmail: candidate.personal_email_id || "",
             esicNo: candidate.esic_no || "",
+            esicPfAttachment: candidate.esic_pf_attachment || "",
             highestQualification: candidate.highest_qualification || "Graduation",
             aadharCardNo: candidate.aadhar_card_no || "",
             qualificationPhoto: candidate.qualification_photo || "",
@@ -370,6 +372,7 @@ const Joining = () => {
                 photo_of_front_bank_passbook: formData.bankPassbookPhoto,
                 personal_email_id: formData.personalEmail,
                 esic_no: formData.esicNo,
+                esic_pf_attachment: formData.esicPfAttachment,
                 highest_qualification: formData.highestQualification,
                 aadhar_card_no: formData.aadharCardNo,
                 qualification_photo: formData.qualificationPhoto,
@@ -819,6 +822,11 @@ const Joining = () => {
                                     <div>
                                         <label className="block text-slate-700 font-semibold mb-1">ESIC Number (If Any)</label>
                                         <input type="text" name="esicNo" value={formData.esicNo} onChange={handleInputChange} placeholder="ESIC IP Number or NA" className="w-full p-2.5 bg-slate-50/70 border border-slate-200 rounded-xl font-mono focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition-all text-slate-800" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-slate-700 font-semibold mb-1">ESIC & PF Attachment</label>
+                                        <input type="file" accept="image/*,application/pdf" onChange={(e) => handleFileUpload(e.target.files[0], "esicPfAttachment")} className="w-full text-xs file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-slate-900 file:text-white file:font-semibold file:cursor-pointer hover:file:bg-indigo-950" />
+                                        {formData.esicPfAttachment && <a href={formData.esicPfAttachment} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 underline mt-2 flex items-center gap-1"><ExternalLink className="w-3 h-3" /> View Uploaded File</a>}
                                     </div>
                                 </div>
                             </div>
